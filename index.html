@@ -287,9 +287,9 @@
         window[cbName] = function (data) { finish(function () { res(data); }); };
         el.onerror = function () { finish(function () { rej(new Error('load')); }); };
         setTimeout(function () { finish(function () { rej(new Error('timeout')); }); }, 8000);
-        /* アルバムまたは楽曲を検索してジャケット画像を取得 */
+        /* 日本国内のアーティストを優先的に検索するように country=jp を追加 */
         el.src = 'https://itunes.apple.com/search?term=' + encodeURIComponent(term) +
-          '&media=music&entity=' + (entity || 'album') + '&limit=1&callback=' + cbName;
+          '&media=music&entity=' + (entity || 'album') + '&limit=1&country=jp&callback=' + cbName;
         document.head.appendChild(el);
       });
     }
@@ -639,10 +639,10 @@
         onMouseEnter: function (e) { e.currentTarget.style.borderColor = 'rgba(249,115,22,0.35)'; },
         onMouseLeave: function (e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }
       },
-        /* 背景レイヤー */
-        h('div', { style: { position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, opacity: 0.12, display: 'flex', justifyContent: 'space-between', overflow: 'hidden' } },
-          photos.flyer && h('img', { src: photos.flyer, style: { height: '100%', width: '70%', objectFit: 'cover', objectPosition: 'left center', maskImage: 'linear-gradient(to right, black 30%, transparent 100%)', WebkitMaskImage: 'linear-gradient(to right, black 30%, transparent 100%)' } }),
-          photos.signboard && h('img', { src: photos.signboard, style: { height: '100%', width: '70%', objectFit: 'cover', objectPosition: 'right center', maskImage: 'linear-gradient(to left, black 30%, transparent 100%)', WebkitMaskImage: 'linear-gradient(to left, black 30%, transparent 100%)' } })
+        /* 背景レイヤー (左右50/50分割) */
+        h('div', { style: { position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, opacity: 0.12, display: 'flex', overflow: 'hidden' } },
+          photos.flyer && h('img', { src: photos.flyer, style: { height: '100%', width: (photos.flyer && photos.signboard) ? '50%' : '100%', objectFit: 'cover', objectPosition: 'center top' } }),
+          photos.signboard && h('img', { src: photos.signboard, style: { height: '100%', width: (photos.flyer && photos.signboard) ? '50%' : '100%', objectFit: 'cover', objectPosition: 'center top' } })
         ),
         /* コンテンツレイヤー (既存の要素をラップするか、zIndexで調整) */
         h('div', { style: { position: 'relative', zIndex: 1 } },
@@ -684,12 +684,13 @@
             h('span', { style: { color: '#f97316', fontSize: 12, fontWeight: 700 } }, ev.bestAct)),
 
           exp && h('div', { style: { padding: '0 14px 14px', borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 2 } },
-            photos.signboard && h('div', { style: { marginTop: 12 } },
-              h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🪧 看板'),
-              h('img', { src: photos.signboard, alt: '看板', style: { width: '100%', maxHeight: 500, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
-            photos.flyer && h('div', { style: { marginTop: 12 } },
-              h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🎨 フライヤー'),
-              h('img', { src: photos.flyer, alt: 'フライヤー', style: { width: '100%', maxHeight: 500, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
+            (photos.flyer || photos.signboard) && h('div', { style: { display: 'grid', gridTemplateColumns: (photos.flyer && photos.signboard) ? '1fr 1fr' : '1fr', gap: 10, marginTop: 12 } },
+              photos.signboard && h('div', null,
+                h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🪧 看板'),
+                h('img', { src: photos.signboard, alt: '看板', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
+              photos.flyer && h('div', null,
+                h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🎨 フライヤー'),
+                h('img', { src: photos.flyer, alt: 'フライヤー', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } }))),
             ev.artists.filter(function (a) { return a.name && a.memo; }).map(function (a) {
               return h('div', { key: a.id, style: { marginTop: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 8, borderLeft: '2px solid rgba(255,255,255,0.12)' } },
                 h('div', { style: { color: '#ddd', fontSize: 12, fontWeight: 600, marginBottom: 3 } }, a.name),
