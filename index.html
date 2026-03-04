@@ -315,14 +315,17 @@
       /* まずはDeezerでアーティスト写真（肖像）を探す */
       return deezerJSONP(name).then(function (d) {
         var res = d.data && d.data[0];
+        /* 高画質なXL画像を使用 */
+        if (res && res.picture_xl) return res.picture_xl;
         if (res && res.picture_big) return res.picture_big;
         /* Deezerで見つからなければiTunesでアルバムアートを探す（フォールバック） */
         return itunesJSONP(name, 'album').then(function (d2) {
           var res2 = d2.results && d2.results[0];
-          if (res2 && res2.artworkUrl100) return res2.artworkUrl100.replace('100x100bb', '600x600bb');
+          /* 1000x1000の高解像度版に置換 */
+          if (res2 && res2.artworkUrl100) return res2.artworkUrl100.replace('100x100bb', '1000x1000bb');
           return itunesJSONP(name, 'song').then(function (d3) {
             var res3 = d3.results && d3.results[0];
-            return (res3 && res3.artworkUrl100) ? res3.artworkUrl100.replace('100x100bb', '600x600bb') : null;
+            return (res3 && res3.artworkUrl100) ? res3.artworkUrl100.replace('100x100bb', '1000x1000bb') : null;
           });
         });
       }).catch(function () { return null; });
@@ -568,10 +571,10 @@
             background: 'linear-gradient(135deg, rgba(30,30,35,0.8), rgba(15,15,20,0.9))', border: '1px solid rgba(255,255,255,0.08)', marginBottom: 16
           }
         },
-          img && h('img', { src: img, style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.35, zIndex: 0, filter: 'blur(1px)' } }),
-          h('div', { style: { position: 'absolute', inset: 0, background: 'linear-gradient(to top, #111318 0%, transparent 80%)', zIndex: 1 } }),
+          img && h('img', { src: img, style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.45, zIndex: 0 } }),
+          h('div', { style: { position: 'absolute', inset: 0, background: 'linear-gradient(to top, #0c0d10 0%, transparent 90%)', zIndex: 1 } }),
           h('div', { style: { position: 'relative', zIndex: 2 } },
-            h('div', { style: { color: '#f97316', fontSize: isTop ? 48 : 32, fontWeight: 900, fontStyle: 'italic', marginBottom: -4, opacity: 0.8, letterSpacing: -2 } }, '#' + p2.rank),
+            h('div', { style: { color: '#f97316', fontSize: isTop ? 48 : 32, fontWeight: 900, fontStyle: 'italic', marginBottom: -4, opacity: 0.9, letterSpacing: -2 } }, '#' + p2.rank),
             h('div', { style: { color: '#fff', fontSize: isTop ? 22 : 18, fontWeight: 800, marginBottom: 2, textShadow: '0 2px 8px rgba(0,0,0,0.8)' } }, p2.item.name),
             h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
               h('span', { style: { color: '#f97316', fontSize: 16, fontWeight: 800 } }, p2.item.count),
