@@ -84,7 +84,7 @@
       return {
         id: uid(), date: new Date().toISOString().slice(0, 10),
         venue: '', title: '', ticket: '', drink: '600', goods: '0',
-        artists: [emptyArtist()], note: '', flyer: null, signboard: null,
+        artists: [emptyArtist()], note: '', flyer: null, signboard: null, setlist: null,
         bestAct: ''
       };
     }
@@ -165,7 +165,7 @@
     function savePhotosToIDB(ev) {
       var promises = [];
       var evClean = Object.assign({}, ev);
-      ['flyer', 'signboard'].forEach(function (field) {
+      ['flyer', 'signboard', 'setlist'].forEach(function (field) {
         var val = ev[field];
         if (val) {
           promises.push(idbPut(field + '_' + ev.id, val));
@@ -181,7 +181,8 @@
     function deletePhotosFromIDB(eventId) {
       return Promise.all([
         idbDel('flyer_' + eventId),
-        idbDel('signboard_' + eventId)
+        idbDel('signboard_' + eventId),
+        idbDel('setlist_' + eventId)
       ]);
     }
     /* 旧データの移行: イベントのflyer/signboardがbase64文字列ならIDBへ移す */
@@ -432,8 +433,8 @@
       useEffect(function () {
         if (!p.initial) return;
         var id = p.initial.id;
-        Promise.all([idbGet('flyer_' + id), idbGet('signboard_' + id)]).then(function (imgs) {
-          setEv(function (x) { return Object.assign({}, x, { flyer: imgs[0], signboard: imgs[1] }); });
+        Promise.all([idbGet('flyer_' + id), idbGet('signboard_' + id), idbGet('setlist_' + id)]).then(function (imgs) {
+          setEv(function (x) { return Object.assign({}, x, { flyer: imgs[0], signboard: imgs[1], setlist: imgs[2] }); });
         });
       }, []);
       function sf(k, v) { setEv(function (x) { var n = Object.assign({}, x); n[k] = v; return n; }); }
@@ -492,8 +493,8 @@
           h('div', null, h('label', { style: lS }, '全体メモ'), h('textarea', { placeholder: '今日の感想、セットリストなど…', value: ev.note, rows: 3, onChange: function (e) { sf('note', e.target.value); }, style: Object.assign({}, iS(), { resize: 'vertical' }) })),
           h('div', null,
             h('label', { style: Object.assign({}, lS, { marginBottom: 8, display: 'block' }) }, '📸 フォト記録'),
-            h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
-              [['flyer', '🎨 フライヤー'], ['signboard', '🪧 看板']].map(function (pair) {
+            h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 } },
+              [['flyer', '🎨 フライヤー'], ['signboard', '🪧 看板'], ['setlist', '🎵 セトリ']].map(function (pair) {
                 return h('div', { key: pair[0] }, h('label', { style: Object.assign({}, lS, { marginBottom: 6, display: 'block' }) }, pair[1]), h(PhotoTile, { value: ev[pair[0]], label: pair[1], onChange: function (v) { sf(pair[0], v); } }));
               }))),
           h('button', { disabled: !valid, onClick: handleSaveClick, style: { padding: '14px', borderRadius: 12, border: 'none', background: valid ? 'linear-gradient(135deg,#f97316,#fb923c)' : '#333', color: valid ? '#000' : '#666', fontWeight: 700, fontSize: 15, cursor: valid ? 'pointer' : 'not-allowed', letterSpacing: 0.5 } }, '保存する')));
@@ -625,12 +626,12 @@
       var s = useState(false); var exp = s[0]; var setExp = s[1];
       var sd = useState(false); var confirmDel = sd[0]; var setConfirmDel = sd[1];
       /* IDBから写真を非同期ロード */
-      var sp = useState({ flyer: null, signboard: null }); var photos = sp[0]; var setPhotos = sp[1];
+      var sp = useState({ flyer: null, signboard: null, setlist: null }); var photos = sp[0]; var setPhotos = sp[1];
       var ev = p.ev;
       useEffect(function () {
         var id = ev.id;
-        Promise.all([idbGet('flyer_' + id), idbGet('signboard_' + id)]).then(function (imgs) {
-          setPhotos({ flyer: imgs[0], signboard: imgs[1] });
+        Promise.all([idbGet('flyer_' + id), idbGet('signboard_' + id), idbGet('setlist_' + id)]).then(function (imgs) {
+          setPhotos({ flyer: imgs[0], signboard: imgs[1], setlist: imgs[2] });
         });
       }, [ev.id, ev.updatedAt]);
 
@@ -690,19 +691,22 @@
             h('span', { style: { color: '#f97316', fontSize: 12, fontWeight: 700 } }, ev.bestAct)),
 
           exp && h('div', { style: { padding: '0 14px 14px', borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 2 } },
-            (photos.flyer || photos.signboard) && h('div', { style: { display: 'grid', gridTemplateColumns: (photos.flyer && photos.signboard) ? '1fr 1fr' : '1fr', gap: 10, marginTop: 12 } },
+            (photos.flyer || photos.signboard || photos.setlist) && h('div', { style: { display: 'grid', gridTemplateColumns: (photos.flyer && photos.signboard) || (photos.flyer && photos.setlist) || (photos.signboard && photos.setlist) ? '1fr 1fr' : '1fr', gap: 10, marginTop: 12 } },
               photos.signboard && h('div', null,
                 h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🪧 看板'),
                 h('img', { src: photos.signboard, alt: '看板', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
               photos.flyer && h('div', null,
                 h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🎨 フライヤー'),
-                h('img', { src: photos.flyer, alt: 'フライヤー', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } }))),
+                h('img', { src: photos.flyer, alt: 'フライヤー', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
+              photos.setlist && h('div', { style: (photos.flyer && photos.signboard) ? { gridColumn: '1 / -1' } : null },
+                h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🎵 セトリ'),
+                h('img', { src: photos.setlist, alt: 'セトリ', style: { width: '100%', maxHeight: 500, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } }))),
             ev.artists.filter(function (a) { return a.name && a.memo; }).map(function (a) {
               return h('div', { key: a.id, style: { marginTop: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 8, borderLeft: '2px solid rgba(255,255,255,0.12)' } },
                 h('div', { style: { color: '#ddd', fontSize: 12, fontWeight: 600, marginBottom: 3 } }, a.name),
-                h('div', { style: { color: '#999', fontSize: 12, lineHeight: 1.5 } }, a.memo));
+                h('div', { style: { color: '#999', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap' } }, a.memo));
             }),
-            ev.note && h('div', { style: { marginTop: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 8, color: '#aaa', fontSize: 12, lineHeight: 1.6 } },
+            ev.note && h('div', { style: { marginTop: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 8, color: '#aaa', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' } },
               h('span', { style: { color: '#555', fontSize: 10, display: 'block', marginBottom: 4 } }, '📝 全体メモ'), ev.note),
             tot > 0 && h('div', { style: { marginTop: 10, color: '#444', fontSize: 11, lineHeight: 1.8 } },
               ev.ticket && h('div', null, '🎫 チケット ¥' + parseInt(ev.ticket).toLocaleString()),
@@ -737,8 +741,27 @@
       var futureEvs = events.filter(function (e) { return e.date >= today; }).sort(function (a, b) { return new Date(a.date) - new Date(b.date); });
       var displaying = viewTab === 'past' ? pastEvs : futureEvs;
 
+      /* JST基準のカウントダウン（秒数リアルタイム更新） */
+      var sCD = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 }); var countdown = sCD[0]; var setCountdown = sCD[1];
       var nextEv = futureEvs[0];
-      var daysToNext = nextEv ? Math.ceil((new Date(nextEv.date) - new Date(today)) / (1000 * 60 * 60 * 24)) : null;
+      useEffect(function () {
+        if (!nextEv) return;
+        function tick() {
+          /* JST (UTC+9) で当日の 0:00 を基準に計算 */
+          var nowJST = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+          var targetJST = new Date(nextEv.date + 'T00:00:00+09:00');
+          var diff = targetJST - nowJST;
+          if (diff <= 0) { setCountdown({ days: 0, hours: 0, minutes: 0, seconds: 0 }); return; }
+          var d = Math.floor(diff / 86400000);
+          var hrs = Math.floor((diff % 86400000) / 3600000);
+          var mins = Math.floor((diff % 3600000) / 60000);
+          var secs = Math.floor((diff % 60000) / 1000);
+          setCountdown({ days: d, hours: hrs, minutes: mins, seconds: secs });
+        }
+        tick();
+        var iv = setInterval(tick, 1000);
+        return function () { clearInterval(iv); };
+      }, [nextEv && nextEv.date]);
 
       var tT = pastEvs.reduce(function (s, e) { return s + (parseInt(e.ticket) || 0); }, 0);
       var tD = pastEvs.reduce(function (s, e) { return s + (parseInt(e.drink) || 0); }, 0);
@@ -788,8 +811,17 @@
                 h('div', { style: { color: '#60a5fa', fontSize: 11, fontWeight: 700, letterSpacing: 1 } }, 'NEXT SHOW'),
                 h('div', { style: { color: '#f0f0f0', fontSize: 13, fontWeight: 600 } }, nextEv.title || nextEv.venue)),
               h('div', { style: { textAlign: 'right' } },
-                h('span', { style: { color: '#60a5fa', fontSize: 20, fontWeight: 800 } }, daysToNext === 0 ? 'Today!' : 'あと ' + daysToNext),
-                daysToNext !== 0 && h('span', { style: { color: '#555', fontSize: 11, marginLeft: 2 } }, '日'))),
+                (countdown.days === 0 && countdown.hours === 0 && countdown.minutes === 0 && countdown.seconds === 0)
+                  ? h('span', { style: { color: '#f97316', fontSize: 20, fontWeight: 800 } }, '🎉 Today!')
+                  : h('div', null,
+                      h('div', { style: { display: 'flex', gap: 4, justifyContent: 'flex-end', alignItems: 'baseline' } },
+                        h('span', { style: { color: '#60a5fa', fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' } }, countdown.days),
+                        h('span', { style: { color: '#555', fontSize: 10 } }, '日 '),
+                        h('span', { style: { color: '#60a5fa', fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, String(countdown.hours).padStart(2, '0')),
+                        h('span', { style: { color: '#555', fontSize: 10 } }, ':'),
+                        h('span', { style: { color: '#60a5fa', fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, String(countdown.minutes).padStart(2, '0')),
+                        h('span', { style: { color: '#555', fontSize: 10 } }, ':'),
+                        h('span', { style: { color: '#60a5fa', fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, String(countdown.seconds).padStart(2, '0')))))),
             h('div', { style: { background: 'linear-gradient(135deg,rgba(249,115,22,0.08),rgba(251,146,60,0.05))', border: '1px solid rgba(249,115,22,0.2)', borderRadius: 14, padding: '14px 18px', display: 'flex', alignItems: 'center' } },
               [['🎫 チケット' + (viewTab === 'past' ? '計' : ''), tT], ['🍺 ドリンク' + (viewTab === 'past' ? '計' : ''), tD], ['🛍 物販' + (viewTab === 'past' ? '計' : ''), tG]].map(function (x, i) { return h('div', { key: i, style: { flex: 1, textAlign: 'center', borderRight: '1px solid rgba(255,255,255,0.07)', padding: '0 8px' } }, h('div', { style: { color: '#666', fontSize: 10, letterSpacing: 1, marginBottom: 4 } }, x[0]), h('div', { style: { color: '#f0f0f0', fontSize: 15, fontWeight: 700 } }, '¥' + x[1].toLocaleString())); }),
               h('div', { style: { flex: 1, textAlign: 'center', paddingLeft: 8 } }, h('div', { style: { color: '#666', fontSize: 10, letterSpacing: 1, marginBottom: 4 } }, '💰 ' + (viewTab === 'past' ? '総合計' : '予算計')), h('div', { style: { color: '#f97316', fontSize: 15, fontWeight: 800 } }, '¥' + tA.toLocaleString())))),
