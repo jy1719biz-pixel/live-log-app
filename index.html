@@ -351,6 +351,14 @@
         if (!name || name.length < 2) return;
         var cancelled = false;
 
+        /* カスタムイベントで他のコンポーネントからの変更を受信 */
+        var onUpdate = function (e) {
+          if (e.detail && e.detail.name === name) {
+            setUrl(e.detail.img);
+          }
+        };
+        window.addEventListener('artist-img-updated', onUpdate);
+
         /* まずIndexedDB (artist_名前) に手動設定画像がないか確認 */
         idbGet('artist_' + name).then(function (manualImg) {
           if (cancelled) return;
@@ -370,7 +378,7 @@
             return function () { clearTimeout(t); };
           }
         });
-        return function () { cancelled = true; };
+        return function () { cancelled = true; window.removeEventListener('artist-img-updated', onUpdate); };
       }, [name]);
 
       /* 手動で画像をセットする関数 */
@@ -379,11 +387,13 @@
           idbDel('artist_' + name).then(function () {
             imgCache.delete(name);
             setUrl(null); // 再度自動取得が走る
+            window.dispatchEvent(new CustomEvent('artist-img-updated', { detail: { name: name, img: null } }));
           });
         } else {
           idbPut('artist_' + name, fileBase64).then(function () {
             imgCache.set(name, fileBase64);
             setUrl(fileBase64);
+            window.dispatchEvent(new CustomEvent('artist-img-updated', { detail: { name: name, img: fileBase64 } }));
           });
         }
       };
