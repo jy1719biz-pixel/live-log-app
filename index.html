@@ -345,22 +345,52 @@
       }).catch(function () { return null; });
     }
     function useArtistImg(name) {
+      /* `url` には表示用の画像、`manual` には手動設定された画像がある場合それを保持 */
       var s = useState(function () { return imgCache.has(name) ? imgCache.get(name) : null; }); var url = s[0]; var setUrl = s[1];
       useEffect(function () {
         if (!name || name.length < 2) return;
-        if (imgCache.has(name)) { setUrl(imgCache.get(name)); return; }
         var cancelled = false;
-        var t = setTimeout(function () {
-          fetchArtistImage(name)
-            .then(function (img) {
-              if (cancelled) return;
-              imgCache.set(name, img); setUrl(img);
-            }).catch(function () { if (!cancelled) { imgCache.set(name, null); } });
-        }, 600);
-        return function () { cancelled = true; clearTimeout(t); };
+
+        /* まずIndexedDB (artist_名前) に手動設定画像がないか確認 */
+        idbGet('artist_' + name).then(function (manualImg) {
+          if (cancelled) return;
+          if (manualImg) {
+            imgCache.set(name, manualImg);
+            setUrl(manualImg);
+          } else {
+            /* 手動画像がない場合のみ、APIから取得 */
+            if (imgCache.has(name) && imgCache.get(name) !== null) { setUrl(imgCache.get(name)); return; }
+            var t = setTimeout(function () {
+              fetchArtistImage(name)
+                .then(function (img) {
+                  if (cancelled) return;
+                  imgCache.set(name, img); setUrl(img);
+                }).catch(function () { if (!cancelled) { imgCache.set(name, null); } });
+            }, 600);
+            return function () { clearTimeout(t); };
+          }
+        });
+        return function () { cancelled = true; };
       }, [name]);
-      return url;
+
+      /* 手動で画像をセットする関数 */
+      var setManualImg = function (fileBase64) {
+        if (!fileBase64) {
+          idbDel('artist_' + name).then(function () {
+            imgCache.delete(name);
+            setUrl(null); // 再度自動取得が走る
+          });
+        } else {
+          idbPut('artist_' + name, fileBase64).then(function () {
+            imgCache.set(name, fileBase64);
+            setUrl(fileBase64);
+          });
+        }
+      };
+
+      return [url, setManualImg];
     }
+
 
     /* ── SVG icons ── */
     function Ico(p) { return h('svg', { width: p.s || 18, height: p.s || 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }, h('path', { d: p.d })); }
@@ -381,8 +411,10 @@
 
     /* ── Artist Avatar ── */
     function ArtistAvatar(p) {
-      var img = useArtistImg(p.name);
+      var sImg = useArtistImg(p.name);
+      var img = sImg[0];
       var sz = p.size || 22;
+
       var br = p.circle ? '50%' : (sz <= 24 ? '50%' : 8);
       return h('span', {
         style: {
@@ -580,9 +612,21 @@
       var others = displayList.slice(5);
 
       function RankCard(p2) {
-        var img = useArtistImg(p2.item.name);
+        var fileRef = useRef(null);
+        var sImg = useArtistImg(p2.item.name);
+        var img = sImg[0];
+        var setImg = sImg[1];
         var isTop = p2.rank === 1;
         var showPhoto = tab === 'artist'; // ライブ会場は写真不要
+
+        function handleFile(e) {
+          var f = e.target.files && e.target.files[0];
+          if (!f) return;
+          compressImg(f).then(function (b64) {
+            setImg(b64);
+          });
+          e.target.value = '';
+        }
 
         return h('div', {
           style: {
@@ -597,12 +641,18 @@
 
           h('div', { style: { position: 'absolute', inset: 0, background: 'linear-gradient(to top, #0c0d10 0%, transparent 80%)', zIndex: 2 } }),
           h('div', { style: { position: 'relative', zIndex: 3 } },
-            h('div', { style: { color: '#f97316', fontSize: isTop ? 56 : 40, fontWeight: 900, fontStyle: 'italic', marginBottom: -6, opacity: 0.9, letterSpacing: -2 } }, '#' + p2.rank),
-            h('div', { style: { color: '#fff', fontSize: isTop ? 24 : 20, fontWeight: 800, marginBottom: 2, textShadow: '0 2px 8px rgba(0,0,0,0.8)' } }, p2.item.name),
-            h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-              h('span', { style: { color: '#f97316', fontSize: 18, fontWeight: 800 } }, p2.item.count),
-              h('span', { style: { color: '#888', fontSize: 11, fontWeight: 600 } }, 'SHOWS'),
-              p2.item.money && h('span', { style: { color: '#555', fontSize: 11, marginLeft: 'auto' } }, '¥' + p2.item.money.toLocaleString()))));
+            h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' } },
+              h('div', null,
+                h('div', { style: { color: '#f97316', fontSize: isTop ? 56 : 40, fontWeight: 900, fontStyle: 'italic', marginBottom: -6, opacity: 0.9, letterSpacing: -2 } }, '#' + p2.rank),
+                h('div', { style: { color: '#fff', fontSize: isTop ? 24 : 20, fontWeight: 800, marginBottom: 2, textShadow: '0 2px 8px rgba(0,0,0,0.8)' } }, p2.item.name),
+                h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                  h('span', { style: { color: '#f97316', fontSize: 18, fontWeight: 800 } }, p2.item.count),
+                  h('span', { style: { color: '#888', fontSize: 11, fontWeight: 600 } }, 'SHOWS'),
+                  p2.item.money && h('span', { style: { color: '#555', fontSize: 11, marginLeft: 10 } }, '¥' + p2.item.money.toLocaleString()))),
+              showPhoto && h('div', { style: { paddingBottom: 4 } },
+                h('button', { onClick: function () { fileRef.current && fileRef.current.click(); }, style: { background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.2)', padding: '6px 10px', borderRadius: 8, color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', display: 'flex', gap: 4, alignItems: 'center' } }, h(IcoEdit, {s: 14}), '画像変更'),
+                h('input', { type: 'file', accept: 'image/*', ref: fileRef, style: { display: 'none' }, onChange: handleFile })
+              ))));
       }
 
       return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.94)', zIndex: 100, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
@@ -664,12 +714,36 @@
                 others.length > 0 && h('div', { style: { marginTop: 24, padding: '0 8px' } },
                   h('div', { style: { color: '#444', fontSize: 11, fontWeight: 800, letterSpacing: 2, marginBottom: 16 } }, 'MORE RANKS'),
                   others.map(function (item, i) {
-                    return h('div', { key: item.name, style: { display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.03)' } },
-                      h('div', { style: { width: 24, fontSize: 13, fontWeight: 700, color: '#666' } }, i + 6),
-                      tab === 'artist' && h(ArtistAvatar, { name: item.name, size: 32, circle: true }),
-                      h('div', { style: { flex: 1, color: '#eee', fontSize: 14, fontWeight: 600 } }, item.name),
-                      h('div', { style: { color: '#f97316', fontWeight: 800, fontSize: 15 } }, item.count, h('span', { style: { fontSize: 9, color: '#555', marginLeft: 3 } }, '回')));
+                    return h(OtherRankRow, { key: item.name, item: item, i: i, tab: tab });
                   }))))));
+    }
+
+    /* ── Other Rank Row (1つのコンポーネントに切り出し) ── */
+    function OtherRankRow(p) {
+      var item = p.item, i = p.i, tab = p.tab;
+      var fileRef = useRef(null);
+      var sImg = useArtistImg(item.name);
+      var img = sImg[0];
+      var setImg = sImg[1];
+
+      function handleFile(e) {
+        var f = e.target.files && e.target.files[0];
+        if (!f) return;
+        compressImg(f).then(function (b64) {
+          setImg(b64);
+        });
+        e.target.value = '';
+      }
+
+      return h('div', { style: { display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0', borderBottom: '1px solid rgba(255,255,255,0.03)' } },
+        h('div', { style: { width: 24, fontSize: 13, fontWeight: 700, color: '#666' } }, i + 6),
+        tab === 'artist' && h(ArtistAvatar, { name: item.name, size: 32, circle: true }),
+        h('div', { style: { flex: 1, color: '#eee', fontSize: 14, fontWeight: 600 } }, item.name),
+        tab === 'artist' && h('div', null,
+          h('button', { onClick: function () { fileRef.current && fileRef.current.click(); }, style: { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '4px 8px', color: '#aaa', fontSize: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 } }, h(IcoEdit, {s: 12}), '画像'),
+          h('input', { type: 'file', accept: 'image/*', ref: fileRef, style: { display: 'none' }, onChange: handleFile })
+        ),
+        h('div', { style: { color: '#f97316', fontWeight: 800, fontSize: 15, marginLeft: 10 } }, item.count, h('span', { style: { fontSize: 9, color: '#555', marginLeft: 3 } }, '回')));
     }
 
     /* ── Event Card ── */
