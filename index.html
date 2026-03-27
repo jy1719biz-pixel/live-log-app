@@ -95,6 +95,23 @@
       border-color: rgba(96,165,250,0.4) !important;
       box-shadow: 0 0 0 2px rgba(96,165,250,0.1) !important;
     }
+
+    /* ── Responsive Grid ── */
+    .event-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+    @media (max-width: 768px) {
+      .event-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    @media (max-width: 480px) {
+      .event-grid {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 
@@ -1379,7 +1396,7 @@
                 displaying.length === 0 ? h('div', { style: { textAlign: 'center', padding: '80px 20px', color: '#444' } },
                   h('div', { style: { fontSize: 48, marginBottom: 16 } }, '🎤'),
                   h('div', { style: { fontSize: 16, marginBottom: 8, color: '#555' } }, 'まだ' + (viewTab === 'past' ? '記録' : '予定') + 'がありません')) :
-                  h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 } },
+                  h('div', { className: 'event-grid' },
                     displaying.map(function (ev) {
                       var d = new Date(ev.date);
                       var mo = d.toLocaleDateString('ja-JP', { month: 'short' });
