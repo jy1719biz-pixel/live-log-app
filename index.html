@@ -7,10 +7,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="LIVE LOG" />
-  <meta name="theme-color" content="#0c0d10" />
+  <meta name="theme-color" content="#050505" />
   <title>🎸 LIVE LOG</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
   <style>
     *,
     *::before,
@@ -23,12 +25,14 @@
     html,
     body {
       height: 100%;
-      background: #0c0d10;
-      color: #e8e8e8
+      background: #050505;
+      color: #e0e0e0
     }
 
     body {
-      font-family: 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', -apple-system, sans-serif
+      font-family: 'Inter', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale
     }
 
     input,
@@ -39,11 +43,11 @@
     }
 
     input[type="date"]::-webkit-calendar-picker-indicator {
-      filter: invert(0.6)
+      filter: invert(0.7)
     }
 
     ::-webkit-scrollbar {
-      width: 4px
+      width: 3px
     }
 
     ::-webkit-scrollbar-track {
@@ -51,13 +55,45 @@
     }
 
     ::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.06);
       border-radius: 2px
     }
 
     input,
     textarea {
       -webkit-appearance: none
+    }
+
+    /* ── Minimal Animations ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes slideUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    @keyframes countPulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.02); }
+      100% { transform: scale(1); }
+    }
+
+    /* ── Smooth transitions for interactive elements ── */
+    button { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+    button:active { transform: scale(0.97); }
+    input, textarea { transition: border-color 0.2s ease, box-shadow 0.2s ease; }
+    input:focus, textarea:focus {
+      border-color: rgba(96,165,250,0.4) !important;
+      box-shadow: 0 0 0 2px rgba(96,165,250,0.1) !important;
     }
   </style>
 </head>
@@ -86,7 +122,7 @@
         openTime: '', startTime: '',
         venue: '', title: '', ticket: '', drink: '600', goods: '0',
         artists: [emptyArtist()], note: '', flyer: null, signboard: null, setlist: null,
-        bestAct: ''
+        bestAct: '', coverType: 'signboard'
       };
     }
 
@@ -268,29 +304,88 @@
       }; r.readAsText(file);
     }
 
-    /* ── アーティスト画像取得: iTunes JSONP (アルバム/シングルアートを代用) ── */
+    /* ── アーティスト画像取得: 複数API フォールバック方式 ── */
+    /* 優先順位: Spotify → Deezer → iTunes → Wikipedia(ja) → Wikipedia(en) → MusicBrainz+Wikidata */
     var imgCache = new Map();
     var _cbIdx = 0;
-    function itunesJSONP(term, entity) {
-      return new Promise(function (res, rej) {
-        var cbName = '__itcb' + (_cbIdx++);
-        var el = document.createElement('script');
-        var done = false;
-        var finish = function (fn) {
-          if (done) return; done = true;
-          try { delete window[cbName]; } catch (e) { }
-          if (el.parentNode) el.parentNode.removeChild(el);
-          fn();
-        };
-        window[cbName] = function (data) { finish(function () { res(data); }); };
-        el.onerror = function () { finish(function () { rej(new Error('load')); }); };
-        setTimeout(function () { finish(function () { rej(new Error('timeout')); }); }, 8000);
-        /* 日本国内のアーティストを優先的に検索するように country=jp を追加 */
-        el.src = 'https://itunes.apple.com/search?term=' + encodeURIComponent(term) +
-          '&media=music&entity=' + (entity || 'album') + '&limit=1&country=jp&callback=' + cbName;
-        document.head.appendChild(el);
-      });
+
+    /* ── Spotify トークンキャッシュ ── */
+    var _spotifyToken = null;   /* { token: string, expiresAt: number } */
+
+    function getSpotifyCredentials() {
+      try {
+        var raw = localStorage.getItem('livelog-spotify');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) { return null; }
     }
+
+    function saveSpotifyCredentials(clientId, clientSecret) {
+      try {
+        localStorage.setItem('livelog-spotify', JSON.stringify({ clientId: clientId, clientSecret: clientSecret }));
+      } catch (e) {}
+    }
+
+    function clearSpotifyCredentials() {
+      try { localStorage.removeItem('livelog-spotify'); } catch (e) {}
+      _spotifyToken = null;
+    }
+
+    /* Spotify アクセストークン取得 (Client Credentials flow) */
+    function getSpotifyToken() {
+      var creds = getSpotifyCredentials();
+      if (!creds || !creds.clientId || !creds.clientSecret) return Promise.resolve(null);
+      /* キャッシュが有効な間は再取得しない (60秒マージン) */
+      if (_spotifyToken && _spotifyToken.expiresAt > Date.now() + 60000) {
+        return Promise.resolve(_spotifyToken.token);
+      }
+      var b64 = btoa(creds.clientId + ':' + creds.clientSecret);
+      return fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Basic ' + b64,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'grant_type=client_credentials'
+      }).then(function (r) {
+        if (!r.ok) return null;
+        return r.json();
+      }).then(function (data) {
+        if (!data || !data.access_token) return null;
+        _spotifyToken = { token: data.access_token, expiresAt: Date.now() + (data.expires_in || 3600) * 1000 };
+        return _spotifyToken.token;
+      }).catch(function () { return null; });
+    }
+
+    /* Spotify アーティスト画像検索 */
+    function fetchSpotifyArtistImage(name) {
+      return getSpotifyToken().then(function (token) {
+        if (!token) return null;
+        var url = 'https://api.spotify.com/v1/search?q=' + encodeURIComponent(name) +
+          '&type=artist&market=JP&limit=5';
+        return fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (!data || !data.artists || !data.artists.items || data.artists.items.length === 0) return null;
+            /* 名前が最も一致するアーティストを選ぶ */
+            var items = data.artists.items;
+            var matched = items.find(function (a) { return isNameMatch(a.name, name); });
+            var artist = matched || items[0];
+            if (!artist || !artist.images || artist.images.length === 0) return null;
+            /* Spotify は images を大きい順に返すので先頭が最高画質 */
+            return artist.images[0].url;
+          });
+      }).catch(function () { return null; });
+    }
+
+    /* 名前マッチング (共通ユーティリティ) */
+    function isNameMatch(a, b) {
+      if (!a || !b) return false;
+      var ac = a.toLowerCase().replace(/[^a-z0-9\u3040-\u9fff]/g, '');
+      var bc = b.toLowerCase().replace(/[^a-z0-9\u3040-\u9fff]/g, '');
+      return ac === bc || ac.includes(bc) || bc.includes(ac);
+    }
+
+    /* ── 1. Deezer JSONP ── */
     function deezerJSONP(name) {
       return new Promise(function (res, rej) {
         var cbName = '__dzcb' + (_cbIdx++);
@@ -309,40 +404,184 @@
         document.head.appendChild(el);
       });
     }
-    function fetchArtistImage(name) {
-      /* Deezerでアーティスト写真（肖像）を探す。
-         国内アーティスト精度向上：
-         - Deezer結果のartist nameが入力とかなり異なる場合は棄却
-         - iTunes は country=jp + entity=musicArtist を優先 */
-      function isNameMatch(a, b) {
-        if (!a || !b) return false;
-        var ac = a.toLowerCase().replace(/[^a-z0-9\u3040-\u9fff]/g, '');
-        var bc = b.toLowerCase().replace(/[^a-z0-9\u3040-\u9fff]/g, '');
-        return ac === bc || ac.includes(bc) || bc.includes(ac);
-      }
-      return deezerJSONP(name).then(function (d) {
-        var res = d.data && d.data[0];
-        /* 名前が一致している場合のみ採用して精度を上げる */
-        if (res && isNameMatch(res.name, name)) {
-          if (res.picture_xl) return res.picture_xl;
-          if (res.picture_big) return res.picture_big;
-        }
-        /* iTunes: アーティスト画像を最優先 (country=jp) */
-        return itunesJSONP(name, 'musicArtist').then(function (d2) {
-          var res2 = d2.results && d2.results[0];
-          if (res2 && res2.artistLinkUrl) {
-            /* artistの場合は artworkUrl がないのでアルバムへフォールバック */
-          }
-          return itunesJSONP(name, 'album').then(function (d3) {
-            var res3 = d3.results && d3.results[0];
-            /* アルバムのアーティスト名も一致確認 */
-            if (res3 && isNameMatch(res3.artistName, name) && res3.artworkUrl100) {
-              return res3.artworkUrl100.replace('100x100bb', '1000x1000bb');
-            }
-            return null;
+
+    /* ── 2. iTunes JSONP ── */
+    function itunesJSONP(term, entity) {
+      return new Promise(function (res, rej) {
+        var cbName = '__itcb' + (_cbIdx++);
+        var el = document.createElement('script');
+        var done = false;
+        var finish = function (fn) {
+          if (done) return; done = true;
+          try { delete window[cbName]; } catch (e) { }
+          if (el.parentNode) el.parentNode.removeChild(el);
+          fn();
+        };
+        window[cbName] = function (data) { finish(function () { res(data); }); };
+        el.onerror = function () { finish(function () { rej(new Error('load')); }); };
+        setTimeout(function () { finish(function () { rej(new Error('timeout')); }); }, 8000);
+        el.src = 'https://itunes.apple.com/search?term=' + encodeURIComponent(term) +
+          '&media=music&entity=' + (entity || 'album') + '&limit=1&country=jp&callback=' + cbName;
+        document.head.appendChild(el);
+      });
+    }
+
+    /* ── 3. Wikipedia REST API (サムネイル取得) ── */
+    function fetchWikipediaImage(title, lang) {
+      var host = (lang || 'ja') + '.wikipedia.org';
+      var url = 'https://' + host + '/api/rest_v1/page/summary/' + encodeURIComponent(title);
+      return fetch(url).then(function (r) {
+        if (!r.ok) return null;
+        return r.json();
+      }).then(function (data) {
+        if (!data) return null;
+        /* originalimage (高解像度) を優先、なければ thumbnail */
+        if (data.originalimage && data.originalimage.source) return data.originalimage.source;
+        if (data.thumbnail && data.thumbnail.source) return data.thumbnail.source;
+        return null;
+      }).catch(function () { return null; });
+    }
+
+    /* Wikipedia検索: 正確なページ名が分からない場合に候補を取得 */
+    function searchWikipedia(name, lang) {
+      var host = (lang || 'ja') + '.wikipedia.org';
+      var suffix = lang === 'en'
+        ? ' band OR singer OR musician'
+        : ' バンド OR 歌手 OR ミュージシャン';
+      var url = 'https://' + host + '/w/api.php?action=query&list=search&srsearch=' +
+        encodeURIComponent(name + suffix) +
+        '&srnamespace=0&srlimit=3&format=json&origin=*';
+      return fetch(url).then(function (r) {
+        if (!r.ok) return [];
+        return r.json();
+      }).then(function (data) {
+        if (!data || !data.query || !data.query.search) return [];
+        return data.query.search.map(function (s) { return s.title; });
+      }).catch(function () { return []; });
+    }
+
+    /* Wikipedia フロー: 直接アクセス → 見つからなければ検索して候補を試す */
+    function tryWikipedia(name, lang) {
+      return fetchWikipediaImage(name, lang).then(function (img) {
+        if (img) return img;
+        return searchWikipedia(name, lang).then(function (titles) {
+          if (titles.length === 0) return null;
+          /* 候補を順番に試す (最大3件) */
+          var chain = Promise.resolve(null);
+          titles.forEach(function (title) {
+            chain = chain.then(function (found) {
+              if (found) return found;
+              return fetchWikipediaImage(title, lang);
+            });
+          });
+          return chain;
+        });
+      });
+    }
+
+    /* ── 4. MusicBrainz → Wikidata → Wikimedia Commons ── */
+    function fetchMusicBrainzImage(name) {
+      var url = 'https://musicbrainz.org/ws/2/artist/?query=artist:' +
+        encodeURIComponent(name) + '&fmt=json&limit=1';
+      return fetch(url, { headers: { 'User-Agent': 'LiveLogApp/1.0' } }).then(function (r) {
+        if (!r.ok) return null;
+        return r.json();
+      }).then(function (data) {
+        if (!data || !data.artists || data.artists.length === 0) return null;
+        var artist = data.artists[0];
+        /* 名前一致チェック */
+        if (!isNameMatch(artist.name, name) &&
+            !(artist['sort-name'] && isNameMatch(artist['sort-name'], name))) return null;
+        var mbid = artist.id;
+        /* URL relations から Wikidata ID を取得 */
+        return fetch('https://musicbrainz.org/ws/2/artist/' + mbid + '?inc=url-rels&fmt=json',
+          { headers: { 'User-Agent': 'LiveLogApp/1.0' } }
+        ).then(function (r2) {
+          if (!r2.ok) return null;
+          return r2.json();
+        }).then(function (detail) {
+          if (!detail || !detail.relations) return null;
+          var wdRel = detail.relations.find(function (r) {
+            return r.type === 'wikidata' && r.url && r.url.resource;
+          });
+          if (!wdRel) return null;
+          var wdId = wdRel.url.resource.split('/').pop();
+          /* Wikidata から画像 (P18) を取得 */
+          return fetch('https://www.wikidata.org/w/api.php?action=wbgetentities&ids=' +
+            wdId + '&props=claims&format=json&origin=*'
+          ).then(function (r3) {
+            if (!r3.ok) return null;
+            return r3.json();
+          }).then(function (wd) {
+            if (!wd || !wd.entities || !wd.entities[wdId]) return null;
+            var claims = wd.entities[wdId].claims;
+            if (!claims.P18 || claims.P18.length === 0) return null;
+            var fileName = claims.P18[0].mainsnak.datavalue.value;
+            /* Wikimedia Commons の画像URLを取得 */
+            return fetch('https://commons.wikimedia.org/w/api.php?action=query&titles=File:' +
+              encodeURIComponent(fileName) + '&prop=imageinfo&iiprop=url&iiurlwidth=800&format=json&origin=*'
+            ).then(function (r4) {
+              if (!r4.ok) return null;
+              return r4.json();
+            }).then(function (commons) {
+              if (!commons || !commons.query || !commons.query.pages) return null;
+              var pages = commons.query.pages;
+              var pageId = Object.keys(pages)[0];
+              if (pageId === '-1') return null;
+              var ii = pages[pageId].imageinfo;
+              if (!ii || ii.length === 0) return null;
+              return ii[0].thumburl || ii[0].url || null;
+            });
           });
         });
       }).catch(function () { return null; });
+    }
+
+    /* ── メイン: 複数APIフォールバック (Spotify→Deezer→iTunes→Wikipedia→MusicBrainz) ── */
+    function fetchArtistImage(name) {
+      /* resolve(null) をベースにして .then() チェーンで順番に試す */
+      return Promise.resolve(null)
+        /* Step 0: Spotify (認証情報が設定されていれば最優先) */
+        .then(function () { return fetchSpotifyArtistImage(name); })
+        /* Step 1: Deezer (アーティスト写真) */
+        .then(function (img) {
+          if (img) return img;
+          return deezerJSONP(name).then(function (d) {
+            var res = d.data && d.data[0];
+            if (res && isNameMatch(res.name, name)) {
+              if (res.picture_xl) return res.picture_xl;
+              if (res.picture_big) return res.picture_big;
+            }
+            return null;
+          }).catch(function () { return null; });
+        })
+        /* Step 2: iTunes (アルバムアート) */
+        .then(function (img) {
+          if (img) return img;
+          return itunesJSONP(name, 'album').then(function (d) {
+            var res = d.results && d.results[0];
+            if (res && isNameMatch(res.artistName, name) && res.artworkUrl100) {
+              return res.artworkUrl100.replace('100x100bb', '1000x1000bb');
+            }
+            return null;
+          }).catch(function () { return null; });
+        })
+        /* Step 3: Wikipedia (日本語) */
+        .then(function (img) {
+          if (img) return img;
+          return tryWikipedia(name, 'ja');
+        })
+        /* Step 4: Wikipedia (英語) */
+        .then(function (img) {
+          if (img) return img;
+          return tryWikipedia(name, 'en');
+        })
+        /* Step 5: MusicBrainz → Wikidata → Wikimedia Commons */
+        .then(function (img) {
+          if (img) return img;
+          return fetchMusicBrainzImage(name);
+        })
+        .catch(function () { return null; });
     }
     function useArtistImg(name) {
       /* `url` には表示用の画像、`manual` には手動設定された画像がある場合それを保持 */
@@ -414,10 +653,10 @@
     function IcoUl() { return h(Ico, { d: 'M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12', s: 16 }); }
 
     /* ── style helpers ── */
-    function iS(x) { return Object.assign({ width: '100%', padding: '10px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#e8e8e8', fontSize: 14, outline: 'none', boxSizing: 'border-box' }, x || {}); }
-    function iB(color) { return { width: 32, height: 32, borderRadius: 8, border: '1px solid ' + color + '33', background: color + '11', color: color, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0, padding: 0 }; }
-    var lS = { color: '#666', fontSize: 11, letterSpacing: 1, display: 'block', marginBottom: 4 };
-    var qB = { padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: '#888', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' };
+    function iS(x) { return Object.assign({ width: '100%', padding: '11px 14px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, color: '#e0e0e0', fontSize: 14, outline: 'none', boxSizing: 'border-box', letterSpacing: 0.2 }, x || {}); }
+    function iB(color) { return { width: 34, height: 34, borderRadius: 10, border: '1px solid ' + color + '22', background: color + '0a', color: color, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0, padding: 0 }; }
+    var lS = { color: '#555', fontSize: 10, letterSpacing: 1.5, textTransform: 'uppercase', display: 'block', marginBottom: 6, fontWeight: 500 };
+    var qB = { padding: '7px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.03)', color: '#777', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 500 };
 
     /* ── Artist Avatar ── */
     function ArtistAvatar(p) {
@@ -439,7 +678,7 @@
 
     /* ── Artist chip ── */
     function ArtistChip(p) {
-      return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px 3px 4px', borderRadius: 20, background: 'rgba(255,255,255,0.06)', color: '#ccc', fontSize: 12, border: '1px solid rgba(255,255,255,0.1)' } },
+      return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px 4px 4px', borderRadius: 20, background: 'rgba(255,255,255,0.04)', color: '#bbb', fontSize: 12, border: '1px solid rgba(255,255,255,0.06)', fontWeight: 500, transition: 'all 0.2s ease', letterSpacing: 0.3 } },
         h(ArtistAvatar, { name: p.artist.name, size: 22, circle: true }),
         p.artist.name);
     }
@@ -459,10 +698,10 @@
     /* ── Photo tile ── */
     function PhotoTile(p) {
       var s = useState(false); var hover = s[0]; var setHover = s[1];
-      if (p.value) return h('div', { style: { position: 'relative', borderRadius: 10, overflow: 'hidden', background: '#1a1b20', border: '1px solid rgba(255,255,255,0.05)' } },
+      if (p.value) return h('div', { style: { position: 'relative', borderRadius: 10, overflow: 'hidden', background: '#0e0e0e', border: '1px solid rgba(255,255,255,0.05)' } },
         h('img', { src: p.value, alt: p.label, style: { width: '100%', height: 160, objectFit: 'contain', display: 'block' } }),
         h('button', { onClick: function () { p.onChange(null); }, style: { position: 'absolute', top: 6, right: 6, width: 26, height: 26, borderRadius: '50%', background: 'rgba(0,0,0,0.7)', border: 'none', color: '#fff', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' } }, '×'));
-      return h('label', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '20px 10px', background: 'rgba(255,255,255,0.03)', border: '1px dashed ' + (hover ? 'rgba(249,115,22,0.4)' : 'rgba(255,255,255,0.12)'), borderRadius: 10, cursor: 'pointer', color: '#555', fontSize: 12 }, onMouseEnter: function () { setHover(true); }, onMouseLeave: function () { setHover(false); } },
+      return h('label', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '20px 10px', background: 'rgba(255,255,255,0.03)', border: '1px dashed ' + (hover ? 'rgba(96,165,250,0.4)' : 'rgba(255,255,255,0.12)'), borderRadius: 10, cursor: 'pointer', color: '#555', fontSize: 12 }, onMouseEnter: function () { setHover(true); }, onMouseLeave: function () { setHover(false); } },
         h('span', { style: { fontSize: 24, opacity: 0.4 } }, '＋'),
         h('span', null, 'タップして追加'),
         h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: function (e) { var f = e.target.files && e.target.files[0]; if (!f) return; compressImg(f).then(function (b) { p.onChange(b); }); } }));
@@ -499,7 +738,7 @@
       var valid = ev.date && ev.venue;
 
       function handleSaveClick() {
-        var evWithTs = Object.assign({}, ev, { updatedAt: Date.now() });
+        var evWithTs = Object.assign({}, ev, { updatedAt: Date.now(), coverType: ev.coverType || 'signboard' });
         savePhotosToIDB(evWithTs).then(function (cleaned) {
           p.onSave(cleaned);
         });
@@ -507,10 +746,10 @@
 
       var vMemo = p.vMeta[ev.venue] || '';
 
-      return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 100, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
-        h('div', { style: { background: '#111318', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 600, maxHeight: '92vh', overflowY: 'auto', padding: '24px 20px 60px', display: 'flex', flexDirection: 'column', gap: 14 } },
+      return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)', zIndex: 100, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', animation: 'fadeIn 0.2s ease' }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
+        h('div', { style: { background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 600, maxHeight: '92vh', overflowY: 'auto', padding: '28px 24px 60px', display: 'flex', flexDirection: 'column', gap: 16, animation: 'slideUp 0.3s cubic-bezier(0.4,0,0.2,1)' } },
           h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
-            h('span', { style: { color: '#f97316', fontWeight: 700, fontSize: 16, letterSpacing: 1 } }, p.initial ? '✏️ 編集' : '🎸 新規登録'),
+            h('span', { style: { color: '#60a5fa', fontWeight: 700, fontSize: 16, letterSpacing: 1 } }, p.initial ? '✏️ 編集' : '🎸 新規登録'),
             h('button', { onClick: p.onClose, style: { background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer' } }, '×')),
 
           /* クイック入力 */
@@ -526,11 +765,11 @@
             h('label', { style: lS }, 'ライブハウス名 *'),
             h('div', { style: { display: 'flex', gap: 8 } },
               h('input', { list: 'vl', placeholder: '例: CLUB QUATTRO', value: ev.venue, onChange: function (e) { sf('venue', e.target.value); }, style: iS({ flex: 1 }) }),
-              ev.venue && h('button', { onClick: function () { setShowVMeta(!showVMeta); }, style: { padding: '0 12px', borderRadius: 10, background: showVMeta ? '#f97316' : 'rgba(255,255,255,0.05)', border: '1px solid ' + (showVMeta ? 'transparent' : 'rgba(255,255,255,0.1)'), color: showVMeta ? '#000' : '#888', fontSize: 11, cursor: 'pointer' } }, '会場メモ')),
+              ev.venue && h('button', { onClick: function () { setShowVMeta(!showVMeta); }, style: { padding: '0 12px', borderRadius: 10, background: showVMeta ? '#60a5fa' : 'rgba(255,255,255,0.05)', border: '1px solid ' + (showVMeta ? 'transparent' : 'rgba(255,255,255,0.1)'), color: showVMeta ? '#000' : '#888', fontSize: 11, cursor: 'pointer' } }, '会場メモ')),
             h('datalist', { id: 'vl' }, p.venues.map(function (v) { return h('option', { key: v, value: v }); }))),
 
-          showVMeta && h('div', { style: { padding: '12px', background: 'rgba(249,115,22,0.05)', border: '1px solid rgba(249,115,22,0.2)', borderRadius: 12 } },
-            h('label', { style: Object.assign({}, lS, { color: '#f97316' }) }, '📍 ' + ev.venue + ' の攻略メモ'),
+          showVMeta && h('div', { style: { padding: '12px', background: 'rgba(96,165,250,0.05)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 12 } },
+            h('label', { style: Object.assign({}, lS, { color: '#60a5fa' }) }, '📍 ' + ev.venue + ' の攻略メモ'),
             h('textarea', { placeholder: 'ロッカー情報、ドリンクの種類、周辺情報など...', value: vMemo, rows: 3, onChange: function (e) { var vm = Object.assign({}, p.vMeta); vm[ev.venue] = e.target.value; p.onSaveVMeta(vm); }, style: Object.assign({}, iS(), { background: 'rgba(0,0,0,0.3)', marginTop: 8 }) })),
 
           h('div', null, h('label', { style: lS }, 'イベントタイトル'), h('input', { placeholder: '例: 対バン夜 vol.3', value: ev.title, onChange: function (e) { sf('title', e.target.value); }, style: iS() })),
@@ -541,13 +780,13 @@
 
           h('div', { style: { padding: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 12 } },
             h('label', { style: lS }, '⭐ 今日のベストアクト / 最高の一曲'),
-            h('input', { placeholder: '例: アンコールの新曲が最高だった', value: ev.bestAct, onChange: function (e) { sf('bestAct', e.target.value); }, style: Object.assign({}, iS(), { background: 'transparent', border: 'none', borderBottom: '1px solid rgba(249,115,22,0.3)', borderRadius: 0, paddingLeft: 0 }) })),
+            h('input', { placeholder: '例: アンコールの新曲が最高だった', value: ev.bestAct, onChange: function (e) { sf('bestAct', e.target.value); }, style: Object.assign({}, iS(), { background: 'transparent', border: 'none', borderBottom: '1px solid rgba(96,165,250,0.3)', borderRadius: 0, paddingLeft: 0 }) })),
 
           h('div', null,
             h('label', { style: Object.assign({}, lS, { marginBottom: 8, display: 'block' }) }, '出演アーティスト'),
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
               ev.artists.map(function (a) { return h(ArtistRow, { key: a.id, artist: a, artistNames: p.artistNames, onChange: function (d) { updA(a.id, d); }, onRemove: function () { delA(a.id); } }); })),
-            h('button', { onClick: addA, style: { marginTop: 8, width: '100%', padding: '10px', background: 'rgba(249,115,22,0.08)', border: '1px dashed rgba(249,115,22,0.4)', borderRadius: 10, color: '#f97316', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13 } }, h(IcoPlus), ' アーティストを追加')),
+            h('button', { onClick: addA, style: { marginTop: 8, width: '100%', padding: '10px', background: 'rgba(96,165,250,0.08)', border: '1px dashed rgba(96,165,250,0.4)', borderRadius: 10, color: '#60a5fa', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13 } }, h(IcoPlus), ' アーティストを追加')),
           h('div', null, h('label', { style: lS }, '全体メモ'), h('textarea', { placeholder: '今日の感想、セットリストなど…', value: ev.note, rows: 3, onChange: function (e) { sf('note', e.target.value); }, style: Object.assign({}, iS(), { resize: 'vertical' }) })),
           h('div', null,
             h('label', { style: Object.assign({}, lS, { marginBottom: 8, display: 'block' }) }, '📸 フォト記録'),
@@ -555,14 +794,19 @@
               [['flyer', '🎨 フライヤー'], ['signboard', '🪧 看板'], ['setlist', '🎵 セトリ']].map(function (pair) {
                 return h('div', { key: pair[0] }, h('label', { style: Object.assign({}, lS, { marginBottom: 6, display: 'block' }) }, pair[1]), h(PhotoTile, { value: ev[pair[0]], label: pair[1], onChange: function (v) { sf(pair[0], v); } }));
               }))),
-          h('button', { disabled: !valid, onClick: handleSaveClick, style: { padding: '14px', borderRadius: 12, border: 'none', background: valid ? 'linear-gradient(135deg,#f97316,#fb923c)' : '#333', color: valid ? '#000' : '#666', fontWeight: 700, fontSize: 15, cursor: valid ? 'pointer' : 'not-allowed', letterSpacing: 0.5 } }, '保存する')));
+          h('div', null,
+            h('label', { style: Object.assign({}, lS, { marginBottom: 8, display: 'block' }) }, '🎞️ グリッド表紙'),
+            h('div', { style: { display: 'flex', gap: 8 } },
+              h('button', { onClick: function() { sf('coverType', 'signboard'); }, style: { flex: 1, padding: '10px', borderRadius: 10, border: '1px solid ' + (ev.coverType === 'signboard' ? '#60a5fa' : 'rgba(255,255,255,0.1)'), background: ev.coverType === 'signboard' ? 'rgba(96,165,250,0.15)' : 'transparent', color: ev.coverType === 'signboard' ? '#60a5fa' : '#888', cursor: 'pointer', fontWeight: 700, fontSize: 13, transition: 'all 0.2s' } }, '🪧 看板'),
+              h('button', { onClick: function() { sf('coverType', 'flyer'); }, style: { flex: 1, padding: '10px', borderRadius: 10, border: '1px solid ' + (ev.coverType === 'flyer' ? '#60a5fa' : 'rgba(255,255,255,0.1)'), background: ev.coverType === 'flyer' ? 'rgba(96,165,250,0.15)' : 'transparent', color: ev.coverType === 'flyer' ? '#60a5fa' : '#888', cursor: 'pointer', fontWeight: 700, fontSize: 13, transition: 'all 0.2s' } }, '🎨 フライヤー'))),
+          h('button', { disabled: !valid, onClick: handleSaveClick, style: { padding: '14px', borderRadius: 12, border: 'none', background: valid ? 'linear-gradient(135deg,#60a5fa,#93c5fd)' : '#333', color: valid ? '#000' : '#666', fontWeight: 700, fontSize: 15, cursor: valid ? 'pointer' : 'not-allowed', letterSpacing: 0.5 } }, '保存する')));
     }
 
     /* ── Backup Modal ── */
     function BackupModal(p) {
       var impRef = useRef();
       return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
-        h('div', { style: { background: '#111318', border: '1px solid rgba(96,165,250,0.25)', borderRadius: 18, width: '100%', maxWidth: 420, padding: '28px 24px' } },
+        h('div', { style: { background: '#0a0a0a', border: '1px solid rgba(96,165,250,0.25)', borderRadius: 18, width: '100%', maxWidth: 420, padding: '28px 24px' } },
           h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 } },
             h('span', { style: { color: '#60a5fa', fontWeight: 700, fontSize: 17 } }, '💾 バックアップ'),
             h('button', { onClick: p.onClose, style: { background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer' } }, '×')),
@@ -622,21 +866,21 @@
       var others = displayList.slice(5);
 
 
-      return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.94)', zIndex: 100, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
-        h('div', { style: { background: '#0c0d10', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '24px 24px 0 0', width: '100%', maxWidth: 640, maxHeight: '94vh', overflowY: 'auto', padding: '0 0 60px' } },
+      return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(12px)', zIndex: 100, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', animation: 'fadeIn 0.2s ease' }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
+        h('div', { style: { background: '#050505', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '24px 24px 0 0', width: '100%', maxWidth: 640, maxHeight: '94vh', overflowY: 'auto', padding: '0 0 60px', animation: 'slideUp 0.3s cubic-bezier(0.4,0,0.2,1)' } },
 
           /* Header */
           h('div', { style: { position: 'sticky', top: 0, zIndex: 10, background: 'rgba(12,13,16,0.8)', backdropFilter: 'blur(20px)', padding: '24px 20px 14px', borderBottom: '1px solid rgba(255,255,255,0.05)' } },
             h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 } },
-              h('span', { style: { color: '#fff', fontWeight: 900, fontSize: 24, letterSpacing: -0.5 } }, '2026 ', h('span', { style: { color: '#f97316' } }, 'REPLAY')),
+              h('span', { style: { color: '#fff', fontWeight: 800, fontSize: 22, letterSpacing: 2 } }, 'REPLAY ', h('span', { style: { color: '#60a5fa', fontWeight: 400 } }, '2026')),
               h('button', { onClick: p.onClose, style: { background: 'rgba(255,255,255,0.08)', border: 'none', color: '#fff', width: 32, height: 32, borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' } }, '×')),
             h('div', { style: { display: 'flex', gap: 6, marginBottom: tab !== 'graph' ? 4 : 0 } },
               [['artist', 'ARTISTS'], ['venue', 'VENUES'], ['graph', '📊 GRAPH']].map(function (t) {
-                return h('button', { key: t[0], onClick: function () { setTab(t[0]); }, style: { flex: 1, padding: '10px', borderRadius: 12, border: 'none', background: tab === t[0] ? '#f97316' : 'rgba(255,255,255,0.05)', color: tab === t[0] ? '#000' : '#888', fontSize: 11, fontWeight: 800, cursor: 'pointer', transition: 'all .2s' } }, t[1]);
+                return h('button', { key: t[0], onClick: function () { setTab(t[0]); }, style: { flex: 1, padding: '10px', borderRadius: 12, border: 'none', background: tab === t[0] ? '#60a5fa' : 'rgba(255,255,255,0.05)', color: tab === t[0] ? '#000' : '#888', fontSize: 11, fontWeight: 800, cursor: 'pointer', transition: 'all .2s' } }, t[1]);
               })),
             tab !== 'graph' && h('div', { style: { display: 'flex', gap: 6 } },
               [['all', 'ALL TIME'], ['3m', 'LAST 3 MONTHS']].map(function (t) {
-                return h('button', { key: t[0], onClick: function () { setTerm(t[0]); }, style: { flex: 1, padding: '8px', borderRadius: 8, border: 'none', background: term === t[0] ? 'rgba(249,115,22,0.15)' : 'transparent', color: term === t[0] ? '#f97316' : '#555', fontSize: 10, fontWeight: 700, cursor: 'pointer' } }, t[1]);
+                return h('button', { key: t[0], onClick: function () { setTerm(t[0]); }, style: { flex: 1, padding: '8px', borderRadius: 8, border: 'none', background: term === t[0] ? 'rgba(96,165,250,0.15)' : 'transparent', color: term === t[0] ? '#60a5fa' : '#555', fontSize: 10, fontWeight: 700, cursor: 'pointer' } }, t[1]);
               }))),
 
           h('div', { style: { padding: '20px' } },
@@ -663,12 +907,12 @@
                               var barH = Math.round((cnt / maxCount) * BAR_H);
                               var label = ym.slice(2).replace('-', '/');
                               return h('div', { key: ym, style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0, width: BAR_W } },
-                                h('div', { style: { color: '#f97316', fontSize: 11, fontWeight: 800 } }, cnt),
+                                h('div', { style: { color: '#60a5fa', fontSize: 11, fontWeight: 800 } }, cnt),
                                 h('div', { style: {
                                   width: '100%', height: barH, minHeight: 4,
-                                  background: 'linear-gradient(to top, #f97316, #fb923c)',
+                                  background: 'linear-gradient(to top, #60a5fa, #93c5fd)',
                                   borderRadius: '4px 4px 0 0',
-                                  boxShadow: '0 0 10px rgba(249,115,22,0.4)',
+                                  boxShadow: '0 0 10px rgba(96,165,250,0.4)',
                                   transition: 'height .4s ease'
                                 } }),
                                 h('div', { style: { color: '#555', fontSize: 9, fontWeight: 600, marginTop: 4, textAlign: 'center', lineHeight: 1.2 } }, label));
@@ -706,25 +950,25 @@
 
       return h('div', {
         style: {
-          position: 'relative', height: isTop ? 280 : 180, borderRadius: 18, overflow: 'hidden', padding: 20, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
-          background: 'linear-gradient(135deg, rgba(30,30,35,0.9), rgba(15,15,20,1))', border: '1px solid rgba(255,255,255,0.08)', marginBottom: 16
+          position: 'relative', height: isTop ? 300 : 200, borderRadius: 16, overflow: 'hidden', padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+          background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.06)', marginBottom: 14, animation: 'fadeUp 0.5s ease both'
         }
       },
         /* 背景のぼかし写真 (装飾用) */
-        showPhoto && img && h('img', { src: img, style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.2, zIndex: 0, filter: 'blur(20px)' } }),
+        showPhoto && img && h('img', { src: img, style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.15, zIndex: 0, filter: 'blur(30px) saturate(0.5)' } }),
         /* メイン写真 (全体表示) */
         showPhoto && img && h('img', { src: img, style: { position: 'absolute', top: '5%', left: '50%', transform: 'translateX(-50%)', height: '80%', width: '100%', objectFit: 'contain', objectPosition: 'bottom', zIndex: 1, filter: 'drop-shadow(0 10px 20px rgba(0,0,0,0.5))' } }),
 
-        h('div', { style: { position: 'absolute', inset: 0, background: 'linear-gradient(to top, #0c0d10 0%, transparent 80%)', zIndex: 2 } }),
+        h('div', { style: { position: 'absolute', inset: 0, background: 'linear-gradient(to top, #050505 0%, transparent 80%)', zIndex: 2 } }),
         h('div', { style: { position: 'relative', zIndex: 3 } },
           h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' } },
             h('div', null,
-              h('div', { style: { color: '#f97316', fontSize: isTop ? 56 : 40, fontWeight: 900, fontStyle: 'italic', marginBottom: -6, opacity: 0.9, letterSpacing: -2 } }, '#' + p2.rank),
-              h('div', { style: { color: '#fff', fontSize: isTop ? 24 : 20, fontWeight: 800, marginBottom: 2, textShadow: '0 2px 8px rgba(0,0,0,0.8)' } }, p2.item.name),
-              h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-                h('span', { style: { color: '#f97316', fontSize: 18, fontWeight: 800 } }, p2.item.count),
-                h('span', { style: { color: '#888', fontSize: 11, fontWeight: 600 } }, 'SHOWS'),
-                p2.item.money && h('span', { style: { color: '#555', fontSize: 11, marginLeft: 10 } }, '¥' + p2.item.money.toLocaleString()))),
+              h('div', { style: { color: 'rgba(96,165,250,0.3)', fontSize: isTop ? 64 : 44, fontWeight: 900, fontStyle: 'italic', marginBottom: -8, letterSpacing: -3, lineHeight: 1 } }, '#' + p2.rank),
+              h('div', { style: { color: '#fff', fontSize: isTop ? 22 : 18, fontWeight: 700, marginBottom: 4, letterSpacing: 0.5 } }, p2.item.name),
+              h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                h('span', { style: { color: '#60a5fa', fontSize: 16, fontWeight: 700 } }, p2.item.count),
+                h('span', { style: { color: '#555', fontSize: 10, fontWeight: 600, letterSpacing: 1 } }, 'SHOWS'),
+                p2.item.money && h('span', { style: { color: '#444', fontSize: 11, marginLeft: 10, fontWeight: 500 } }, '¥' + p2.item.money.toLocaleString()))),
             showPhoto && h('div', { style: { paddingBottom: 4 } },
               h('button', { onClick: function () { fileRef.current && fileRef.current.click(); }, style: { background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.2)', padding: '6px 10px', borderRadius: 8, color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', display: 'flex', gap: 4, alignItems: 'center' } }, h(IcoEdit, {s: 14}), '画像変更'),
               h('input', { type: 'file', accept: 'image/*', ref: fileRef, style: { display: 'none' }, onChange: handleFile })
@@ -756,7 +1000,7 @@
           h('button', { onClick: function () { fileRef.current && fileRef.current.click(); }, style: { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '4px 8px', color: '#aaa', fontSize: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 } }, h(IcoEdit, {s: 12}), '画像'),
           h('input', { type: 'file', accept: 'image/*', ref: fileRef, style: { display: 'none' }, onChange: handleFile })
         ),
-        h('div', { style: { color: '#f97316', fontWeight: 800, fontSize: 15, marginLeft: 10 } }, item.count, h('span', { style: { fontSize: 9, color: '#555', marginLeft: 3 } }, '回')));
+        h('div', { style: { color: '#60a5fa', fontWeight: 800, fontSize: 15, marginLeft: 10 } }, item.count, h('span', { style: { fontSize: 9, color: '#555', marginLeft: 3 } }, '回')));
     }
 
     /* ── Event Card ── */
@@ -781,9 +1025,9 @@
       var hasSB = !!photos.signboard;
 
       return h('div', {
-        style: { position: 'relative', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16, overflow: 'hidden', transition: 'border-color .2s', background: '#111318' },
-        onMouseEnter: function (e) { e.currentTarget.style.borderColor = 'rgba(249,115,22,0.35)'; },
-        onMouseLeave: function (e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }
+        style: { position: 'relative', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 14, overflow: 'hidden', transition: 'all 0.3s cubic-bezier(0.4,0,0.2,1)', background: '#0a0a0a', animation: 'fadeUp 0.4s ease both' },
+        onMouseEnter: function (e) { e.currentTarget.style.borderColor = 'rgba(96,165,250,0.25)'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 30px rgba(96,165,250,0.06)'; },
+        onMouseLeave: function (e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'; e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }
       },
         /* 背景レイヤー (看板優先で1枚のみ) */
         (photos.signboard || photos.flyer) && h('div', { style: { position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0, opacity: 0.12, overflow: 'hidden' } },
@@ -795,15 +1039,15 @@
           hasSB && h('div', { style: { position: 'relative', width: '100%', height: 220, overflow: 'hidden' } },
             h('img', { src: photos.signboard, alt: '看板', style: { width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top', display: 'block', filter: 'brightness(0.85)' } }),
             h('div', { style: { position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, transparent 0%, rgba(17,19,24,0.4) 50%, rgba(17,19,24,0.8) 80%, rgba(17,19,24,1) 100%)' } }),
-            h('div', { style: { position: 'absolute', top: 10, left: 12, textAlign: 'center', background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)', border: '1px solid rgba(249,115,22,0.4)', borderRadius: 10, padding: '5px 9px', minWidth: 40 } },
-              h('div', { style: { color: '#f97316', fontSize: 10, fontWeight: 700 } }, mo),
+            h('div', { style: { position: 'absolute', top: 10, left: 12, textAlign: 'center', background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(8px)', border: '1px solid rgba(96,165,250,0.4)', borderRadius: 10, padding: '5px 9px', minWidth: 40 } },
+              h('div', { style: { color: '#60a5fa', fontSize: 10, fontWeight: 700 } }, mo),
               h('div', { style: { color: '#fff', fontSize: 20, fontWeight: 800, lineHeight: 1 } }, dy),
               h('div', { style: { color: '#aaa', fontSize: 9 } }, wd)),
             h('div', { style: { position: 'absolute', top: 10, right: 10, display: 'flex', gap: 5 } },
               h('button', { onClick: function () { p.onEdit(ev); }, style: Object.assign({}, iB('#60a5fa'), { background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)' }) }, h(IcoEdit)),
               h('button', { onClick: function () { setExp(function (e) { return !e; }); }, style: Object.assign({}, iB('#aaa'), { background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)' }) }, exp ? h(IcoUp) : h(IcoDown))),
             h('div', { style: { position: 'absolute', bottom: 10, left: 12, right: 12 } },
-              h('div', { style: { color: '#f97316', fontSize: 10, letterSpacing: 1, marginBottom: 2 } }, '📍 ' + ev.venue),
+              h('div', { style: { color: '#60a5fa', fontSize: 10, letterSpacing: 1, marginBottom: 2 } }, '📍 ' + ev.venue),
               h('div', { style: { color: '#f5f5f5', fontSize: 14, fontWeight: 800, lineHeight: 1.3, textShadow: '0 1px 4px rgba(0,0,0,0.8)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, ev.title || '(タイトルなし)'),
               (ev.openTime || ev.startTime) && h('div', { style: { color: '#ccc', fontSize: 11, marginTop: 3, textShadow: '0 1px 4px rgba(0,0,0,0.8)' } },
                 ev.openTime && ('開場 ' + ev.openTime),
@@ -811,12 +1055,12 @@
                 ev.startTime && ('開演 ' + ev.startTime)))),
 
           !hasSB && h('div', { style: { padding: '14px 14px 0', display: 'flex', gap: 12, alignItems: 'flex-start' } },
-            h('div', { style: { flexShrink: 0, textAlign: 'center', background: 'rgba(249,115,22,0.1)', border: '1px solid rgba(249,115,22,0.25)', borderRadius: 10, padding: '5px 9px', minWidth: 42 } },
-              h('div', { style: { color: '#f97316', fontSize: 10, fontWeight: 600 } }, mo),
+            h('div', { style: { flexShrink: 0, textAlign: 'center', background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.25)', borderRadius: 10, padding: '5px 9px', minWidth: 42 } },
+              h('div', { style: { color: '#60a5fa', fontSize: 10, fontWeight: 600 } }, mo),
               h('div', { style: { color: '#fff', fontSize: 20, fontWeight: 800, lineHeight: 1 } }, dy),
               h('div', { style: { color: '#888', fontSize: 10 } }, wd)),
             h('div', { style: { flex: 1, minWidth: 0 } },
-              h('div', { style: { color: '#f97316', fontSize: 11, letterSpacing: 1, marginBottom: 2 } }, '📍 ' + ev.venue),
+              h('div', { style: { color: '#60a5fa', fontSize: 11, letterSpacing: 1, marginBottom: 2 } }, '📍 ' + ev.venue),
               h('div', { style: { color: '#f0f0f0', fontSize: 15, fontWeight: 700, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, ev.title || '(タイトルなし)'),
               (ev.openTime || ev.startTime) && h('div', { style: { color: '#777', fontSize: 10, marginTop: 2 } }, (ev.openTime ? '🚪 ' + ev.openTime : ''), (ev.openTime && ev.startTime ? ' / ' : ''), (ev.startTime ? '🎵 ' + ev.startTime : '')),
               tot > 0 && h('div', { style: { color: '#555', fontSize: 11, marginTop: 3 } }, '¥' + tot.toLocaleString())),
@@ -829,21 +1073,21 @@
           h('div', { style: { padding: '10px 14px', display: 'flex', flexWrap: 'wrap', gap: 6 } },
             ev.artists.filter(function (a) { return a.name; }).map(function (a) { return h(ArtistChip, { key: a.id, artist: a }); })),
 
-          ev.bestAct && h('div', { style: { margin: '0 14px 10px', padding: '6px 10px', background: 'rgba(249,115,22,0.1)', border: '1px solid rgba(249,115,22,0.2)', borderRadius: 10, display: 'inline-flex', alignItems: 'center', gap: 6 } },
+          ev.bestAct && h('div', { style: { margin: '0 14px 10px', padding: '6px 10px', background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 10, display: 'inline-flex', alignItems: 'center', gap: 6 } },
             h('span', { style: { fontSize: 14 } }, '⭐'),
-            h('span', { style: { color: '#f97316', fontSize: 12, fontWeight: 700 } }, ev.bestAct)),
+            h('span', { style: { color: '#60a5fa', fontSize: 12, fontWeight: 700 } }, ev.bestAct)),
 
           exp && h('div', { style: { padding: '0 14px 14px', borderTop: '1px solid rgba(255,255,255,0.05)', marginTop: 2 } },
             (photos.flyer || photos.signboard || photos.setlist) && h('div', { style: { display: 'grid', gridTemplateColumns: (photos.flyer && photos.signboard) || (photos.flyer && photos.setlist) || (photos.signboard && photos.setlist) ? '1fr 1fr' : '1fr', gap: 10, marginTop: 12 } },
               photos.signboard && h('div', null,
                 h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🪧 看板'),
-                h('img', { src: photos.signboard, alt: '看板', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
+                h('img', { src: photos.signboard, alt: '看板', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#0e0e0e', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
               photos.flyer && h('div', null,
                 h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🎨 フライヤー'),
-                h('img', { src: photos.flyer, alt: 'フライヤー', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
+                h('img', { src: photos.flyer, alt: 'フライヤー', style: { width: '100%', maxHeight: 400, objectFit: 'contain', background: '#0e0e0e', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } })),
               photos.setlist && h('div', { style: { gridColumn: (!photos.signboard && !photos.flyer) ? '1' : '1 / -1' } },
                 h('div', { style: { color: '#555', fontSize: 10, marginBottom: 6, letterSpacing: 1 } }, '🎵 セトリ'),
-                h('img', { src: photos.setlist, alt: 'セトリ', style: { width: '100%', maxHeight: 500, objectFit: 'contain', background: '#1a1b20', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } }))),
+                h('img', { src: photos.setlist, alt: 'セトリ', style: { width: '100%', maxHeight: 500, objectFit: 'contain', background: '#0e0e0e', borderRadius: 10, border: '1px solid rgba(255,255,255,0.07)', display: 'block' } }))),
             (ev.openTime || ev.startTime) && h('div', { style: { marginTop: 10, padding: '6px 10px', background: 'rgba(96,165,250,0.06)', border: '1px solid rgba(96,165,250,0.15)', borderRadius: 8, display: 'flex', gap: 16, fontSize: 12 } },
               ev.openTime && h('span', null, h('span', { style: { color: '#555', marginRight: 4 } }, '📌 開場'), h('span', { style: { color: '#ddd', fontWeight: 600 } }, ev.openTime)),
               ev.startTime && h('span', null, h('span', { style: { color: '#555', marginRight: 4 } }, '▶️ 開演'), h('span', { style: { color: '#60a5fa', fontWeight: 700 } }, ev.startTime))),
@@ -864,6 +1108,142 @@
               h('div', { style: { display: 'flex', gap: 8 } },
                 h('button', { onClick: function () { deletePhotosFromIDB(ev.id).then(function () { p.onDelete(ev.id); }); }, style: { flex: 1, padding: '8px', background: '#ef4444', border: 'none', borderRadius: 8, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' } }, '削除する'),
                 h('button', { onClick: function () { setConfirmDel(false); }, style: { flex: 1, padding: '8px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: '#aaa', fontSize: 13, cursor: 'pointer' } }, 'キャンセル'))))));
+    }
+
+    /* ── Settings Modal (Spotify API 設定) ── */
+    function SettingsModal(p) {
+      var creds = getSpotifyCredentials() || {};
+      var s1 = useState(creds.clientId || ''); var clientId = s1[0]; var setClientId = s1[1];
+      var s2 = useState(creds.clientSecret || ''); var clientSecret = s2[0]; var setClientSecret = s2[1];
+      var s3 = useState('idle'); var testSt = s3[0]; var setTestSt = s3[1];
+
+      function handleSave() {
+        if (clientId && clientSecret) {
+          saveSpotifyCredentials(clientId.trim(), clientSecret.trim());
+          _spotifyToken = null; /* トークンキャッシュリセット */
+          imgCache.clear();    /* 画像キャッシュもリセットして再取得させる */
+        } else {
+          clearSpotifyCredentials();
+          imgCache.clear();
+        }
+        p.onClose();
+      }
+
+      function handleTest() {
+        if (!clientId || !clientSecret) return;
+        setTestSt('testing');
+        saveSpotifyCredentials(clientId.trim(), clientSecret.trim());
+        _spotifyToken = null;
+        getSpotifyToken().then(function (token) {
+          setTestSt(token ? 'ok' : 'fail');
+          if (!token) clearSpotifyCredentials();
+        }).catch(function () { setTestSt('fail'); });
+      }
+
+      function handleClear() {
+        setClientId(''); setClientSecret('');
+        clearSpotifyCredentials();
+        imgCache.clear();
+        setTestSt('idle');
+      }
+
+      var hasConfig = !!(creds.clientId && creds.clientSecret);
+
+      return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
+        h('div', { style: { background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 18, width: '100%', maxWidth: 440, padding: '28px 24px' } },
+
+          /* タイトル */
+          h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 } },
+            h('span', { style: { color: '#1DB954', fontWeight: 700, fontSize: 17 } }, '⚙️ 設定 / Spotify API'),
+            h('button', { onClick: p.onClose, style: { background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer' } }, '×')),
+
+          /* 説明 */
+          h('div', { style: { padding: '12px 14px', background: 'rgba(29,185,84,0.07)', border: '1px solid rgba(29,185,84,0.2)', borderRadius: 10, marginBottom: 18 } },
+            h('p', { style: { color: '#aaa', fontSize: 12, lineHeight: 1.7, margin: 0 } },
+              'Spotify API を設定すると、アーティスト写真の自動取得精度が大幅に向上します。', h('br'),
+              h('a', { href: 'https://developer.spotify.com/dashboard', target: '_blank', style: { color: '#1DB954', fontSize: 11 } }, '→ Spotify Developer Dashboard でアプリを作成'),
+              h('br'),
+              h('span', { style: { color: '#666', fontSize: 11 } }, 'Redirect URI は任意。Client Secret は端末内にのみ保存されます。'))),
+
+          /* Client ID */
+          h('div', { style: { marginBottom: 12 } },
+            h('label', { style: { color: '#666', fontSize: 11, letterSpacing: 1, display: 'block', marginBottom: 4 } }, 'CLIENT ID'),
+            h('input', {
+              type: 'text', value: clientId, placeholder: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+              onChange: function (e) { setClientId(e.target.value); setTestSt('idle'); },
+              style: { width: '100%', padding: '10px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#e8e8e8', fontSize: 13, outline: 'none', fontFamily: 'monospace' }
+            })),
+
+          /* Client Secret */
+          h('div', { style: { marginBottom: 18 } },
+            h('label', { style: { color: '#666', fontSize: 11, letterSpacing: 1, display: 'block', marginBottom: 4 } }, 'CLIENT SECRET'),
+            h('input', {
+              type: 'password', value: clientSecret, placeholder: '••••••••••••••••••••••••••••••••',
+              onChange: function (e) { setClientSecret(e.target.value); setTestSt('idle'); },
+              style: { width: '100%', padding: '10px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#e8e8e8', fontSize: 13, outline: 'none', fontFamily: 'monospace' }
+            })),
+
+          /* テスト結果 */
+          testSt !== 'idle' && h('div', { style: { marginBottom: 14, padding: '8px 12px', borderRadius: 8, background: testSt === 'ok' ? 'rgba(29,185,84,0.1)' : testSt === 'fail' ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.04)', border: '1px solid ' + (testSt === 'ok' ? 'rgba(29,185,84,0.3)' : testSt === 'fail' ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'), color: testSt === 'ok' ? '#1DB954' : testSt === 'fail' ? '#ef4444' : '#888', fontSize: 12, textAlign: 'center' } },
+            testSt === 'testing' ? '🔄 接続確認中…' : testSt === 'ok' ? '✓ 認証成功！画像取得が有効になりました' : '✗ 認証失敗。Client ID / Secret を確認してください'),
+
+          /* ボタン群 */
+          h('div', { style: { display: 'flex', gap: 8 } },
+            h('button', { onClick: handleTest, disabled: !clientId || !clientSecret || testSt === 'testing', style: { flex: 1, padding: '10px', borderRadius: 10, border: '1px solid rgba(29,185,84,0.4)', background: 'rgba(29,185,84,0.08)', color: '#1DB954', fontSize: 13, fontWeight: 700, cursor: clientId && clientSecret ? 'pointer' : 'not-allowed', opacity: clientId && clientSecret ? 1 : 0.4 } }, '接続テスト'),
+            h('button', { onClick: handleSave, style: { flex: 2, padding: '10px', borderRadius: 10, border: 'none', background: clientId && clientSecret ? 'linear-gradient(135deg,#1DB954,#1ed760)' : '#333', color: clientId && clientSecret ? '#000' : '#666', fontSize: 13, fontWeight: 700, cursor: 'pointer' } }, clientId && clientSecret ? '✓ 保存して適用' : '設定をクリア')),
+
+          /* 既存設定がある場合のクリアボタン */
+          hasConfig && h('button', { onClick: handleClear, style: { marginTop: 10, width: '100%', padding: '8px', background: 'transparent', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, color: '#ef4444', fontSize: 12, cursor: 'pointer' } }, 'Spotify 設定を削除する')));
+    }
+
+    /* ── Event Grid Card (グリッド用カード) ── */
+    function EventGridCard(p) {
+      var s = useState(null); var coverPhoto = s[0]; var setCoverPhoto = s[1];
+      useEffect(function () {
+        var ct = p.ev.coverType || 'signboard';
+        var key = ct + '_' + p.ev.id;
+        idbGet(key).then(function (img) { setCoverPhoto(img); });
+      }, [p.ev.id, p.ev.coverType]);
+
+      var d = new Date(p.ev.date);
+      var wd = d.toLocaleDateString('ja-JP', { weekday: 'short' });
+      var tot = (parseInt(p.ev.ticket) || 0) + (parseInt(p.ev.drink) || 0) + (parseInt(p.ev.goods) || 0);
+
+      return h('div', {
+        style: {
+          position: 'relative', borderRadius: 12, overflow: 'hidden', cursor: 'pointer',
+          transition: 'all 0.3s cubic-bezier(0.4,0,0.2,1)', border: '1px solid rgba(255,255,255,0.06)',
+          animation: 'fadeUp 0.5s ease both', height: '280px', backgroundColor: '#0a0a0a'
+        },
+        onMouseEnter: function (e) {
+          e.currentTarget.style.transform = 'scale(1.03)';
+          e.currentTarget.style.borderColor = 'rgba(96,165,250,0.25)';
+          e.currentTarget.style.boxShadow = '0 12px 40px rgba(96,165,250,0.1)';
+        },
+        onMouseLeave: function (e) {
+          e.currentTarget.style.transform = 'scale(1)';
+          e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)';
+          e.currentTarget.style.boxShadow = 'none';
+        },
+        onClick: function () { p.onEdit(p.ev); }
+      },
+        /* 表紙写真背景 */
+        coverPhoto && h('img', { src: coverPhoto, alt: p.ev.title, style: { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center' } }),
+        /* グラデーション */
+        h('div', { style: { position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, transparent 0%, rgba(10,10,10,0.4) 50%, rgba(10,10,10,0.95) 100%)' } }),
+        /* 情報 */
+        h('div', { style: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: '14px 12px' } },
+          h('div', { style: { color: '#60a5fa', fontSize: 9, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 2 } }, p.mo + ' ' + p.dy + ' ' + wd),
+          h('div', { style: { color: '#fff', fontSize: 13, fontWeight: 700, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', marginBottom: 4 } }, p.ev.title || '(タイトルなし)'),
+          h('div', { style: { color: '#888', fontSize: 10, marginBottom: 3 } }, p.ev.venue),
+          tot > 0 && h('div', { style: { color: '#60a5fa', fontSize: 11, fontWeight: 600 } }, '¥' + tot.toLocaleString())),
+        /* アーティスト写真（右下） */
+        p.ev.artists && p.ev.artists.length > 0 && h('div', { style: { position: 'absolute', bottom: 12, right: 12, display: 'flex', gap: 4, zIndex: 3 } },
+          p.ev.artists.slice(0, 3).map(function (a, idx) {
+            return h(ArtistAvatar, { key: idx, name: a.name, size: 24, circle: true });
+          }),
+          p.ev.artists.length > 3 && h('span', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, borderRadius: '50%', background: 'rgba(96,165,250,0.2)', border: '1px solid rgba(96,165,250,0.4)', color: '#60a5fa', fontSize: 10, fontWeight: 700 } }, '+' + (p.ev.artists.length - 3)))
+      );
     }
 
     /* ── Save badge ── */
@@ -934,27 +1314,27 @@
         setShowForm(false); setEditEv(null);
       }
 
-      return h('div', { style: { minHeight: '100vh', background: '#0b0c10', color: '#e8e8e8', fontFamily: "'Hiragino Kaku Gothic ProN','Noto Sans JP',-apple-system,sans-serif", paddingBottom: 80, position: 'relative' } },
+      return h('div', { style: { minHeight: '100vh', background: '#050505', color: '#e8e8e8', fontFamily: "'Hiragino Kaku Gothic ProN','Noto Sans JP',-apple-system,sans-serif", paddingBottom: 80, position: 'relative' } },
         /* ホーム画面背景画像 */
         h('div', { style: { position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none' } },
           h('img', {
             src: '/Users/apple/.gemini/antigravity/brain/f5f6976b-bb32-4b86-b68e-59b2798fd3d2/livehouse_background_atmosphere_1772631282980.png',
             style: { width: '100%', height: '100%', objectFit: 'cover', opacity: 0.35, filter: 'blur(3px) brightness(0.8)' }
           }),
-          h('div', { style: { position: 'absolute', inset: 0, background: 'radial-gradient(circle at center, transparent 0%, #0b0c10 100%)' } })
+          h('div', { style: { position: 'absolute', inset: 0, background: 'radial-gradient(circle at center, transparent 0%, #050505 100%)' } })
         ),
         h('div', { style: { position: 'relative', zIndex: 1 } },
 
-          h('header', { style: { position: 'sticky', top: 0, zIndex: 50, background: 'rgba(12,13,16,0.95)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '14px 16px', paddingTop: 'max(14px,calc(env(safe-area-inset-top) + 14px))', display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+          h('header', { style: { position: 'sticky', top: 0, zIndex: 50, background: 'rgba(5,5,5,0.92)', backdropFilter: 'blur(20px)', borderBottom: '1px solid rgba(255,255,255,0.04)', padding: '16px 20px', paddingTop: 'max(16px,calc(env(safe-area-inset-top) + 16px))', display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
             h('div', null,
-              h('div', { style: { color: '#f97316', fontSize: 18, fontWeight: 800, letterSpacing: 1, lineHeight: 1 } }, '🎸 LIVE LOG'),
+              h('div', { style: { color: '#fff', fontSize: 17, fontWeight: 700, letterSpacing: 3, lineHeight: 1, textTransform: 'uppercase' } }, 'LIVE LOG'),
               h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 } },
                 h('span', { style: { color: '#555', fontSize: 11, letterSpacing: 2 } }, events.length + ' SHOWS'),
                 h(SaveBadge, { status: status }))),
             h('div', { style: { display: 'flex', gap: 6 } },
               h('button', { onClick: function () { setShowBk(true); }, style: { padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(96,165,250,0.3)', background: 'rgba(96,165,250,0.08)', color: '#60a5fa', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600 } }, h(IcoDl), ' BK'),
-              h('button', { onClick: function () { setShowRank(true); }, style: { padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(249,115,22,0.3)', background: 'rgba(249,115,22,0.08)', color: '#f97316', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600 } }, h(IcoTrophy), ' 集計'),
-              h('button', { onClick: function () { setEditEv(null); setShowForm(true); }, style: { padding: '8px 12px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#f97316,#fb923c)', color: '#000', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 } }, h(IcoPlus), ' 追加'))),
+              h('button', { onClick: function () { setShowRank(true); }, style: { padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(96,165,250,0.3)', background: 'rgba(96,165,250,0.08)', color: '#60a5fa', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600 } }, h(IcoTrophy), ' 集計'),
+              h('button', { onClick: function () { setEditEv(null); setShowForm(true); }, style: { padding: '8px 12px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#60a5fa,#93c5fd)', color: '#000', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 } }, h(IcoPlus), ' 追加'))),
 
           loaded && events.length > 0 && h('div', { style: { maxWidth: 600, margin: '14px auto 0', padding: '0 16px' } },
             nextEv && h('div', { style: { background: 'rgba(96,165,250,0.1)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 12, padding: '10px 14px', marginBottom: 14 } },
@@ -969,9 +1349,9 @@
                     nextEv.startTime && ('▶️ 開演 ' + nextEv.startTime))),
                 h('div', { style: { textAlign: 'right', flexShrink: 0 } },
                   countdown.started
-                    ? h('div', { style: { color: '#f97316', fontSize: 18, fontWeight: 800 } }, '🎉 開演中!')
+                    ? h('div', { style: { color: '#60a5fa', fontSize: 18, fontWeight: 800 } }, '🎉 開演中!')
                     : (countdown.days === 0 && countdown.hours === 0 && countdown.minutes === 0 && countdown.seconds < 5)
-                      ? h('div', { style: { color: '#f97316', fontSize: 18, fontWeight: 800 } }, '🎉 Today!')
+                      ? h('div', { style: { color: '#60a5fa', fontSize: 18, fontWeight: 800 } }, '🎉 Today!')
                       : h('div', null,
                           countdown.days > 0 && h('div', { style: { display: 'flex', gap: 3, justifyContent: 'flex-end', alignItems: 'baseline', marginBottom: 2 } },
                             h('span', { style: { color: '#60a5fa', fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' } }, countdown.days),
@@ -981,11 +1361,11 @@
                             h('span', { style: { color: '#555', fontSize: 11 } }, ':'),
                             h('span', { style: { color: '#60a5fa', fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, String(countdown.minutes).padStart(2,'0')),
                             h('span', { style: { color: '#555', fontSize: 11 } }, ':'),
-                            h('span', { style: { color: '#f97316', fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, String(countdown.seconds).padStart(2,'0'))),
+                            h('span', { style: { color: '#60a5fa', fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums' } }, String(countdown.seconds).padStart(2,'0'))),
                           nextEv.startTime && h('div', { style: { color: '#555', fontSize: 9, textAlign: 'right', marginTop: 2 } }, '開演まで'))))),
-            h('div', { style: { background: 'linear-gradient(135deg,rgba(249,115,22,0.08),rgba(251,146,60,0.05))', border: '1px solid rgba(249,115,22,0.2)', borderRadius: 14, padding: '14px 18px', display: 'flex', alignItems: 'center' } },
+            h('div', { style: { background: 'linear-gradient(135deg,rgba(96,165,250,0.08),rgba(147,197,253,0.05))', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 14, padding: '14px 18px', display: 'flex', alignItems: 'center' } },
               [['🎫 チケット' + (viewTab === 'past' ? '計' : ''), tT], ['🍺 ドリンク' + (viewTab === 'past' ? '計' : ''), tD], ['🛍 物販' + (viewTab === 'past' ? '計' : ''), tG]].map(function (x, i) { return h('div', { key: i, style: { flex: 1, textAlign: 'center', borderRight: '1px solid rgba(255,255,255,0.07)', padding: '0 8px' } }, h('div', { style: { color: '#666', fontSize: 10, letterSpacing: 1, marginBottom: 4 } }, x[0]), h('div', { style: { color: '#f0f0f0', fontSize: 15, fontWeight: 700 } }, '¥' + x[1].toLocaleString())); }),
-              h('div', { style: { flex: 1, textAlign: 'center', paddingLeft: 8 } }, h('div', { style: { color: '#666', fontSize: 10, letterSpacing: 1, marginBottom: 4 } }, '💰 ' + (viewTab === 'past' ? '総合計' : '予算計')), h('div', { style: { color: '#f97316', fontSize: 15, fontWeight: 800 } }, '¥' + tA.toLocaleString())))),
+              h('div', { style: { flex: 1, textAlign: 'center', paddingLeft: 8 } }, h('div', { style: { color: '#666', fontSize: 10, letterSpacing: 1, marginBottom: 4 } }, '💰 ' + (viewTab === 'past' ? '総合計' : '予算計')), h('div', { style: { color: '#60a5fa', fontSize: 15, fontWeight: 800 } }, '¥' + tA.toLocaleString())))),
 
           h('main', { style: { maxWidth: 600, margin: '0 auto', padding: '16px' } },
             !loaded ? h('div', { style: { textAlign: 'center', padding: '60px 0', color: '#444' } }, '読み込み中…') :
@@ -993,22 +1373,19 @@
                 h('div', { style: { display: 'flex', background: 'rgba(255,255,255,0.03)', borderRadius: 12, padding: 4, marginBottom: 16 } },
                   [['past', '記録 (Past)', pastEvs.length], ['upcoming', '予定 (Upcoming)', futureEvs.length]].map(function (tab) {
                     var active = viewTab === tab[0];
-                    return h('button', { key: tab[0], onClick: function () { setViewTab(tab[0]); }, style: { flex: 1, padding: '10px', borderRadius: 9, border: 'none', background: active ? '#222' : 'transparent', color: active ? '#f97316' : '#666', fontSize: 13, fontWeight: 700, cursor: 'pointer', transition: 'all .2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 } },
+                    return h('button', { key: tab[0], onClick: function () { setViewTab(tab[0]); }, style: { flex: 1, padding: '10px', borderRadius: 9, border: 'none', background: active ? '#222' : 'transparent', color: active ? '#60a5fa' : '#666', fontSize: 13, fontWeight: 700, cursor: 'pointer', transition: 'all .2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 } },
                       tab[1], h('span', { style: { fontSize: 10, opacity: 0.6 } }, tab[2]));
                   })),
                 displaying.length === 0 ? h('div', { style: { textAlign: 'center', padding: '80px 20px', color: '#444' } },
                   h('div', { style: { fontSize: 48, marginBottom: 16 } }, '🎤'),
                   h('div', { style: { fontSize: 16, marginBottom: 8, color: '#555' } }, 'まだ' + (viewTab === 'past' ? '記録' : '予定') + 'がありません')) :
-                  h('div', { style: { position: 'relative' } },
-                    h('div', { style: { position: 'absolute', left: 30, top: 0, bottom: 0, width: 1, background: 'linear-gradient(to bottom,#f97316,rgba(249,115,22,0.1))', opacity: 0.15 } }),
-                    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-                      displaying.map(function (ev, i) {
-                        var yr = new Date(ev.date).getFullYear();
-                        var pyr = i > 0 ? new Date(displaying[i - 1].date).getFullYear() : null;
-                        return h('div', { key: ev.id },
-                          (i === 0 || pyr !== yr) && h('div', { style: { textAlign: 'center', color: '#333', fontSize: 12, letterSpacing: 3, margin: '8px 0', fontWeight: 700 } }, '— ' + yr + ' —'),
-                          h(EventCard, { ev: ev, onEdit: function (ev) { setEditEv(ev); setShowForm(true); }, onDelete: function (id) { save(events.filter(function (e) { return e.id !== id; })); } }));
-                      })))),
+                  h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 } },
+                    displaying.map(function (ev) {
+                      var d = new Date(ev.date);
+                      var mo = d.toLocaleDateString('ja-JP', { month: 'short' });
+                      var dy = d.getDate();
+                      return h(EventGridCard, { key: ev.id, ev: ev, mo: mo, dy: dy, onEdit: function (ev) { setEditEv(ev); setShowForm(true); }, onDelete: function (id) { save(events.filter(function (e) { return e.id !== id; })); } });
+                    }))),
 
             showForm && h(EventModal, { initial: editEv, onSave: handleSave, onClose: function () { setShowForm(false); setEditEv(null); }, venues: venues, artistNames: artNames, vMeta: vMeta, onSaveVMeta: function (vm) { save(null, vm); } }),
             showRank && h(RankingModal, { events: events, onClose: function () { setShowRank(false); }, vMeta: vMeta }),
