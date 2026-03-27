@@ -736,10 +736,39 @@
         h('input', { placeholder: '感想メモ（任意）', value: p.artist.memo, onChange: function (e) { p.onChange(Object.assign({}, p.artist, { memo: e.target.value })); }, style: iS() }));
     }
 
+    /* ── Gemini AI解析 ── */
+    function callGeminiAI(apiKey, base64Data, mimeType) {
+      var prompt = 'このスクリーンショットはX(旧Twitter)のライブ告知ツイートです。画像からライブ情報を抽出して、必ず以下のJSON形式のみで返してください（他のテキスト不要）:\n{"title":"公演タイトル（不明はnull）","venue":"会場名（不明はnull）","date":"YYYY-MM-DD形式（不明はnull）","openTime":"HH:MM形式（不明はnull）","startTime":"HH:MM形式（不明はnull）","artists":["アーティスト名の配列"]}';
+      return fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + apiKey, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }] }] })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (d.error) throw new Error(d.error.message);
+        var text = d.candidates[0].content.parts[0].text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        return JSON.parse(text);
+      });
+    }
+
+    /* ── Gemini API Key Modal ── */
+    function AIKeyModal(p) {
+      var sK = useState(p.current || ''); var key = sK[0]; var setKey = sK[1];
+      return h('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }, onClick: function (e) { if (e.target === e.currentTarget) p.onClose(); } },
+        h('div', { style: { background: '#0a0a0a', border: '1px solid rgba(96,165,250,0.25)', borderRadius: 18, width: '100%', maxWidth: 400, padding: '28px 24px' } },
+          h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 } },
+            h('span', { style: { color: '#60a5fa', fontWeight: 700, fontSize: 16 } }, '🤖 Gemini API設定'),
+            h('button', { onClick: p.onClose, style: { background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer' } }, '×')),
+          h('p', { style: { color: '#888', fontSize: 12, lineHeight: 1.6, marginBottom: 16 } }, 'Google AI StudioでGemini APIキーを取得し、ここに貼り付けてください。キーはこのデバイスにのみ保存されます。'),
+          h('input', { type: 'password', placeholder: 'AIzaSy...', value: key, onChange: function (e) { setKey(e.target.value); }, style: { width: '100%', padding: '12px', background: '#111', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 10, color: '#e0e0e0', fontSize: 13, outline: 'none', marginBottom: 12 } }),
+          h('button', { onClick: function () { localStorage.setItem('gemini-key', key); p.onSave(); }, disabled: !key.trim(), style: { width: '100%', padding: '12px', borderRadius: 12, border: 'none', background: key.trim() ? 'linear-gradient(135deg,#60a5fa,#93c5fd)' : '#333', color: key.trim() ? '#000' : '#666', fontWeight: 700, fontSize: 14, cursor: key.trim() ? 'pointer' : 'not-allowed' } }, '保存する')));
+    }
+
     /* ── Event Form Modal ── */
     function EventModal(p) {
       var s1 = useState(p.initial || emptyEvent()); var ev = s1[0]; var setEv = s1[1];
       var sM = useState(false); var showVMeta = sM[0]; var setShowVMeta = sM[1];
+      var sAI = useState('idle'); var aiStatus = sAI[0]; var setAiStatus = sAI[1];
+      var aiRef = useRef();
       /* 編集時: IDBから写真を読み込んでフォームにセット */
       useEffect(function () {
         if (!p.initial) return;
@@ -752,6 +781,40 @@
       function updA(id, d) { setEv(function (x) { return Object.assign({}, x, { artists: x.artists.map(function (a) { return a.id === id ? d : a; }) }); }); }
       function delA(id) { setEv(function (x) { return Object.assign({}, x, { artists: x.artists.filter(function (a) { return a.id !== id; }) }); }); }
       function addA() { setEv(function (x) { return Object.assign({}, x, { artists: x.artists.concat([emptyArtist()]) }); }); }
+      function handleAIFile(e) {
+        var f = e.target.files && e.target.files[0]; if (!f) return;
+        var apiKey = localStorage.getItem('gemini-key') || '';
+        if (!apiKey) { alert('Gemini APIキーが設定されていません。\n画面右上の🤖ボタンから設定してください。'); return; }
+        setAiStatus('loading');
+        var reader = new FileReader();
+        reader.onload = function (ev2) {
+          var parts = ev2.target.result.split(',');
+          var mime = parts[0].split(':')[1].split(';')[0];
+          var b64 = parts[1];
+          callGeminiAI(apiKey, b64, mime).then(function (info) {
+            setEv(function (x) {
+              var updated = Object.assign({}, x);
+              if (info.date) updated.date = info.date;
+              if (info.venue) updated.venue = info.venue;
+              if (info.title) updated.title = info.title;
+              if (info.openTime) updated.openTime = info.openTime;
+              if (info.startTime) updated.startTime = info.startTime;
+              if (info.artists && info.artists.length > 0) {
+                updated.artists = info.artists.map(function (name) { var a = emptyArtist(); a.name = name; return a; });
+              }
+              return updated;
+            });
+            setAiStatus('done');
+            setTimeout(function () { setAiStatus('idle'); }, 3000);
+          }).catch(function (err) {
+            console.error('AI error:', err);
+            setAiStatus('error');
+            setTimeout(function () { setAiStatus('idle'); }, 3000);
+          });
+        };
+        reader.readAsDataURL(f);
+        e.target.value = '';
+      }
       var valid = ev.date && ev.venue;
 
       function handleSaveClick() {
@@ -767,7 +830,10 @@
         h('div', { style: { background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 600, maxHeight: '92vh', overflowY: 'auto', padding: '28px 24px 60px', display: 'flex', flexDirection: 'column', gap: 16, animation: 'slideUp 0.3s cubic-bezier(0.4,0,0.2,1)' } },
           h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
             h('span', { style: { color: '#60a5fa', fontWeight: 700, fontSize: 16, letterSpacing: 1 } }, p.initial ? '✏️ 編集' : '🎸 新規登録'),
-            h('button', { onClick: p.onClose, style: { background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer' } }, '×')),
+            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+              h('button', { onClick: function () { aiRef.current && aiRef.current.click(); }, disabled: aiStatus === 'loading', style: { padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(96,165,250,0.3)', background: aiStatus === 'done' ? 'rgba(74,222,128,0.15)' : aiStatus === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(96,165,250,0.08)', color: aiStatus === 'done' ? '#4ade80' : aiStatus === 'error' ? '#ef4444' : '#60a5fa', cursor: aiStatus === 'loading' ? 'wait' : 'pointer', fontSize: 12, fontWeight: 600 } }, aiStatus === 'loading' ? '⏳ 解析中…' : aiStatus === 'done' ? '✅ 入力済み' : aiStatus === 'error' ? '❌ エラー' : '🤖 AI解析'),
+              h('input', { ref: aiRef, type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: handleAIFile }),
+              h('button', { onClick: p.onClose, style: { background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer' } }, '×'))),
 
           /* クイック入力 */
           !p.initial && h('div', { style: { display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 } },
@@ -1281,6 +1347,7 @@
       var sGC = useState(function () { return parseInt(localStorage.getItem('gridCols') || '2'); });
       var gridCols = sGC[0]; var setGridCols = sGC[1];
       function changeGrid(n) { setGridCols(n); localStorage.setItem('gridCols', n); }
+      var s6 = useState(false); var showAIKey = s6[0]; var setShowAIKey = s6[1];
 
       var today = new Date().toISOString().slice(0, 10);
       var pastEvs = events.filter(function (e) { return e.date < today; }).sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
@@ -1352,6 +1419,7 @@
                 h('span', { style: { color: '#555', fontSize: 11, letterSpacing: 2 } }, events.length + ' SHOWS'),
                 h(SaveBadge, { status: status }))),
             h('div', { style: { display: 'flex', gap: 6 } },
+              h('button', { onClick: function () { setShowAIKey(true); }, style: { padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(96,165,250,0.3)', background: 'rgba(96,165,250,0.08)', color: '#60a5fa', cursor: 'pointer', fontSize: 14 } }, '🤖'),
               h('button', { onClick: function () { setShowBk(true); }, style: { padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(96,165,250,0.3)', background: 'rgba(96,165,250,0.08)', color: '#60a5fa', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600 } }, h(IcoDl), ' BK'),
               h('button', { onClick: function () { setShowRank(true); }, style: { padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(96,165,250,0.3)', background: 'rgba(96,165,250,0.08)', color: '#60a5fa', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600 } }, h(IcoTrophy), ' 集計'),
               h('button', { onClick: function () { setEditEv(null); setShowForm(true); }, style: { padding: '8px 12px', borderRadius: 10, border: 'none', background: 'linear-gradient(135deg,#60a5fa,#93c5fd)', color: '#000', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 } }, h(IcoPlus), ' 追加'))),
@@ -1414,7 +1482,8 @@
 
             showForm && h(EventModal, { initial: editEv, onSave: handleSave, onClose: function () { setShowForm(false); setEditEv(null); }, venues: venues, artistNames: artNames, vMeta: vMeta, onSaveVMeta: function (vm) { save(null, vm); } }),
             showRank && h(RankingModal, { events: events, onClose: function () { setShowRank(false); }, vMeta: vMeta }),
-            showBk && h(BackupModal, { events: events, onImport: save, onClose: function () { setShowBk(false); } })
+            showBk && h(BackupModal, { events: events, onImport: save, onClose: function () { setShowBk(false); } }),
+            showAIKey && h(AIKeyModal, { current: localStorage.getItem('gemini-key') || '', onSave: function () { setShowAIKey(false); }, onClose: function () { setShowAIKey(false); } })
           )
         )
       )
