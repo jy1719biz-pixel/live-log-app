@@ -1278,6 +1278,9 @@
       var s3 = useState(false); var showRank = s3[0]; var setShowRank = s3[1];
       var s4 = useState(false); var showBk = s4[0]; var setShowBk = s4[1];
       var s5 = useState('past'); var viewTab = s5[0]; var setViewTab = s5[1];
+      var sGC = useState(function () { return parseInt(localStorage.getItem('gridCols') || '2'); });
+      var gridCols = sGC[0]; var setGridCols = sGC[1];
+      function changeGrid(n) { setGridCols(n); localStorage.setItem('gridCols', n); }
 
       var today = new Date().toISOString().slice(0, 10);
       var pastEvs = events.filter(function (e) { return e.date < today; }).sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
@@ -1393,22 +1396,28 @@
                     return h('button', { key: tab[0], onClick: function () { setViewTab(tab[0]); }, style: { flex: 1, padding: '10px', borderRadius: 9, border: 'none', background: active ? '#222' : 'transparent', color: active ? '#60a5fa' : '#666', fontSize: 13, fontWeight: 700, cursor: 'pointer', transition: 'all .2s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 } },
                       tab[1], h('span', { style: { fontSize: 10, opacity: 0.6 } }, tab[2]));
                   })),
+                h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 4, marginBottom: 10 } },
+                  [1, 2, 3].map(function (n) {
+                    var act = gridCols === n;
+                    return h('button', { key: n, onClick: function () { changeGrid(n); }, style: { width: 30, height: 30, padding: 0, borderRadius: 8, border: '1px solid ' + (act ? '#60a5fa' : 'rgba(255,255,255,0.1)'), background: act ? 'rgba(96,165,250,0.15)' : 'transparent', color: act ? '#60a5fa' : '#666', fontWeight: 700, cursor: 'pointer', fontSize: 12, transition: 'all 0.2s' } }, n);
+                  })),
                 displaying.length === 0 ? h('div', { style: { textAlign: 'center', padding: '80px 20px', color: '#444' } },
                   h('div', { style: { fontSize: 48, marginBottom: 16 } }, '🎤'),
                   h('div', { style: { fontSize: 16, marginBottom: 8, color: '#555' } }, 'まだ' + (viewTab === 'past' ? '記録' : '予定') + 'がありません')) :
-                  h('div', { className: 'event-grid' },
+                  h('div', { className: 'event-grid', style: { gridTemplateColumns: 'repeat(' + gridCols + ', 1fr)' } },
                     displaying.map(function (ev) {
                       var d = new Date(ev.date);
                       var mo = d.toLocaleDateString('ja-JP', { month: 'short' });
                       var dy = d.getDate();
                       return h(EventGridCard, { key: ev.id, ev: ev, mo: mo, dy: dy, onEdit: function (ev) { setEditEv(ev); setShowForm(true); }, onDelete: function (id) { save(events.filter(function (e) { return e.id !== id; })); } });
-                    }))),
+                    })),
 
             showForm && h(EventModal, { initial: editEv, onSave: handleSave, onClose: function () { setShowForm(false); setEditEv(null); }, venues: venues, artistNames: artNames, vMeta: vMeta, onSaveVMeta: function (vm) { save(null, vm); } }),
             showRank && h(RankingModal, { events: events, onClose: function () { setShowRank(false); }, vMeta: vMeta }),
             showBk && h(BackupModal, { events: events, onImport: save, onClose: function () { setShowBk(false); } })
           )
         )
+      )
       );
     }
 
