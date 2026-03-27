@@ -737,15 +737,17 @@
     }
 
     /* ── Gemini AI解析 ── */
-    function callGeminiAI(apiKey, base64Data, mimeType) {
-      var prompt = 'このスクリーンショットはX(旧Twitter)のライブ告知ツイートです。画像からライブ情報を抽出して、必ず以下のJSON形式のみで返してください（他のテキスト不要）:\n{"title":"公演タイトル（不明はnull）","venue":"会場名（不明はnull）","date":"YYYY-MM-DD形式（不明はnull）","openTime":"HH:MM形式（不明はnull）","startTime":"HH:MM形式（不明はnull）","artists":["アーティスト名の配列"]}';
-      return fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + apiKey, {
+    function callGeminiAI(apiKey, tweetUrl) {
+      var prompt = 'このURLのX(旧Twitter)のツイートにあるライブ告知情報を抽出して、必ず以下のJSON形式のみで返してください（他のテキスト不要）:\n{"title":"公演タイトル（不明はnull）","venue":"会場名（不明はnull）","date":"YYYY-MM-DD形式（不明はnull）","openTime":"HH:MM形式（不明はnull）","startTime":"HH:MM形式（不明はnull）","artists":["アーティスト名の配列"]}\n\n' + tweetUrl;
+      return fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + apiKey, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }] }] })
+        body: JSON.stringify({ tools: [{ url_context: {} }], contents: [{ parts: [{ text: prompt }] }] })
       }).then(function (r) { return r.json(); }).then(function (d) {
         if (d.error) throw new Error(d.error.message);
-        var text = d.candidates[0].content.parts[0].text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        var text = '';
+        d.candidates[0].content.parts.forEach(function (pt) { if (pt.text) text += pt.text; });
+        text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
         return JSON.parse(text);
       });
     }
@@ -768,7 +770,8 @@
       var s1 = useState(p.initial || emptyEvent()); var ev = s1[0]; var setEv = s1[1];
       var sM = useState(false); var showVMeta = sM[0]; var setShowVMeta = sM[1];
       var sAI = useState('idle'); var aiStatus = sAI[0]; var setAiStatus = sAI[1];
-      var aiRef = useRef();
+      var sAIIn = useState(false); var showAIInput = sAIIn[0]; var setShowAIInput = sAIIn[1];
+      var sAIUrl = useState(''); var aiUrl = sAIUrl[0]; var setAiUrl = sAIUrl[1];
       /* 編集時: IDBから写真を読み込んでフォームにセット */
       useEffect(function () {
         if (!p.initial) return;
@@ -781,39 +784,32 @@
       function updA(id, d) { setEv(function (x) { return Object.assign({}, x, { artists: x.artists.map(function (a) { return a.id === id ? d : a; }) }); }); }
       function delA(id) { setEv(function (x) { return Object.assign({}, x, { artists: x.artists.filter(function (a) { return a.id !== id; }) }); }); }
       function addA() { setEv(function (x) { return Object.assign({}, x, { artists: x.artists.concat([emptyArtist()]) }); }); }
-      function handleAIFile(e) {
-        var f = e.target.files && e.target.files[0]; if (!f) return;
+      function handleAIAnalyze() {
+        var url = aiUrl.trim(); if (!url) return;
         var apiKey = localStorage.getItem('gemini-key') || '';
         if (!apiKey) { alert('Gemini APIキーが設定されていません。\n画面右上の🤖ボタンから設定してください。'); return; }
         setAiStatus('loading');
-        var reader = new FileReader();
-        reader.onload = function (ev2) {
-          var parts = ev2.target.result.split(',');
-          var mime = parts[0].split(':')[1].split(';')[0];
-          var b64 = parts[1];
-          callGeminiAI(apiKey, b64, mime).then(function (info) {
-            setEv(function (x) {
-              var updated = Object.assign({}, x);
-              if (info.date) updated.date = info.date;
-              if (info.venue) updated.venue = info.venue;
-              if (info.title) updated.title = info.title;
-              if (info.openTime) updated.openTime = info.openTime;
-              if (info.startTime) updated.startTime = info.startTime;
-              if (info.artists && info.artists.length > 0) {
-                updated.artists = info.artists.map(function (name) { var a = emptyArtist(); a.name = name; return a; });
-              }
-              return updated;
-            });
-            setAiStatus('done');
-            setTimeout(function () { setAiStatus('idle'); }, 3000);
-          }).catch(function (err) {
-            console.error('AI error:', err);
-            setAiStatus('error');
-            setTimeout(function () { setAiStatus('idle'); }, 3000);
+        callGeminiAI(apiKey, url).then(function (info) {
+          setEv(function (x) {
+            var updated = Object.assign({}, x);
+            if (info.date) updated.date = info.date;
+            if (info.venue) updated.venue = info.venue;
+            if (info.title) updated.title = info.title;
+            if (info.openTime) updated.openTime = info.openTime;
+            if (info.startTime) updated.startTime = info.startTime;
+            if (info.artists && info.artists.length > 0) {
+              updated.artists = info.artists.map(function (name) { var a = emptyArtist(); a.name = name; return a; });
+            }
+            return updated;
           });
-        };
-        reader.readAsDataURL(f);
-        e.target.value = '';
+          setAiStatus('done');
+          setShowAIInput(false);
+          setTimeout(function () { setAiStatus('idle'); }, 3000);
+        }).catch(function (err) {
+          console.error('AI error:', err);
+          setAiStatus('error');
+          setTimeout(function () { setAiStatus('idle'); }, 3000);
+        });
       }
       var valid = ev.date && ev.venue;
 
@@ -831,9 +827,12 @@
           h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
             h('span', { style: { color: '#60a5fa', fontWeight: 700, fontSize: 16, letterSpacing: 1 } }, p.initial ? '✏️ 編集' : '🎸 新規登録'),
             h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-              h('button', { onClick: function () { aiRef.current && aiRef.current.click(); }, disabled: aiStatus === 'loading', style: { padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(96,165,250,0.3)', background: aiStatus === 'done' ? 'rgba(74,222,128,0.15)' : aiStatus === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(96,165,250,0.08)', color: aiStatus === 'done' ? '#4ade80' : aiStatus === 'error' ? '#ef4444' : '#60a5fa', cursor: aiStatus === 'loading' ? 'wait' : 'pointer', fontSize: 12, fontWeight: 600 } }, aiStatus === 'loading' ? '⏳ 解析中…' : aiStatus === 'done' ? '✅ 入力済み' : aiStatus === 'error' ? '❌ エラー' : '🤖 AI解析'),
-              h('input', { ref: aiRef, type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: handleAIFile }),
+              h('button', { onClick: function () { setShowAIInput(!showAIInput); }, disabled: aiStatus === 'loading', style: { padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(96,165,250,0.3)', background: aiStatus === 'done' ? 'rgba(74,222,128,0.15)' : aiStatus === 'error' ? 'rgba(239,68,68,0.15)' : showAIInput ? 'rgba(96,165,250,0.15)' : 'rgba(96,165,250,0.08)', color: aiStatus === 'done' ? '#4ade80' : aiStatus === 'error' ? '#ef4444' : '#60a5fa', cursor: aiStatus === 'loading' ? 'wait' : 'pointer', fontSize: 12, fontWeight: 600 } }, aiStatus === 'loading' ? '⏳ 解析中…' : aiStatus === 'done' ? '✅ 入力済み' : aiStatus === 'error' ? '❌ エラー' : '🤖 AI解析'),
               h('button', { onClick: p.onClose, style: { background: 'none', border: 'none', color: '#888', fontSize: 22, cursor: 'pointer' } }, '×'))),
+
+          showAIInput && h('div', { style: { display: 'flex', gap: 8 } },
+            h('input', { type: 'url', placeholder: 'https://x.com/... のURLを貼り付け', value: aiUrl, onChange: function (e) { setAiUrl(e.target.value); }, onKeyDown: function (e) { if (e.key === 'Enter') handleAIAnalyze(); }, style: Object.assign({}, iS(), { flex: 1 }) }),
+            h('button', { onClick: handleAIAnalyze, disabled: !aiUrl.trim() || aiStatus === 'loading', style: { padding: '0 14px', borderRadius: 10, border: 'none', background: aiUrl.trim() && aiStatus !== 'loading' ? '#60a5fa' : '#333', color: aiUrl.trim() && aiStatus !== 'loading' ? '#000' : '#666', fontWeight: 700, fontSize: 13, cursor: aiUrl.trim() && aiStatus !== 'loading' ? 'pointer' : 'not-allowed', whiteSpace: 'nowrap' } }, '解析')),
 
           /* クイック入力 */
           !p.initial && h('div', { style: { display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 } },
